@@ -1,6 +1,6 @@
 # Code Desensitizer for Airgap environments
 
-<img src="spring-extractor-cli.png" alt="Spring Extractor CLI" width="450" />
+<img src="assets/spring-extractor-cli.png" alt="Spring Extractor CLI" width="450" />
 
 ## Problem Statement
 
@@ -84,6 +84,9 @@ The trace step writes these artifacts into the output directory:
 - `CLAUDE_PROMPT.txt`
 - `reverse_sanitize.sh`
 - `reverse_sanitize.ps1`
+
+<img src="assets/spring-extractor-results.png" alt="Spring Extractor CLI" width="650" />
+
 
 ### 3. Generate tests externally
 
