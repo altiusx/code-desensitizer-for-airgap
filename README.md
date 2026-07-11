@@ -1,6 +1,6 @@
 # Code Desensitizer for Airgap environments
 
-<img src="assets/spring-extractor-cli.png" alt="Extractor CLI" width="450" />
+<img src="assets/code-desensitizer-cli.png" alt="Extractor CLI" width="450" />
 
 ## Problem Statement
 
@@ -113,7 +113,7 @@ The trace step writes these artifacts into the output directory:
 
 > **Security note:** `mapping.json` maps the sanitized names back to the sensitive originals. Keep it inside the airgap — never share it alongside the sanitized files. The repository's `.gitignore` excludes `extracted/` and `mapping.json` for this reason.
 
-<img src="assets/spring-extractor-results.png" alt="Extractor results" width="650" />
+<img src="assets/code-desensitizer-results.png" alt="Extractor results" width="650" />
 
 
 ### 3. Generate tests externally
