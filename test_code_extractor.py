@@ -31,6 +31,7 @@ from code_extractor import (
     mask_strings_java,
     mask_strings_react,
     mask_strings_angular_typescript,
+    strip_comments_stylesheet,
     unmask_strings,
     sanitize,
     load_mappings,
@@ -420,22 +421,95 @@ import { Component } from '@angular/core';
   styleUrls: ['./payroll-list.component.scss', './theme.scss'],
 })
 export class PayrollListComponent {
-  route = { path: 'payroll', redirectTo: 'payroll/list' };
   label = 'Sensitive label';
 }
 """
     registry = StringMaskRegistry()
     masked = mask_strings_angular_typescript(src, registry)
 
+    # Module specifier and @Component metadata are preserved verbatim.
     assert "'@angular/core'" in masked
     assert "'app-payroll-list'" in masked
     assert "'./payroll-list.component.html'" in masked
     assert "'./payroll-list.component.scss'" in masked
     assert "'./theme.scss'" in masked
-    assert "path: 'payroll'" in masked
-    assert "redirectTo: 'payroll/list'" in masked
+    # An ordinary string in the class body is masked.
     assert "Sensitive label" not in masked
     assert registry.to_dict() == {"STR_0": "'Sensitive label'"}
+
+
+def test_mask_angular_masks_generic_object_keys_outside_decorator():
+    # The key-based exemptions (name/path/redirectTo/...) must NOT fire on
+    # ordinary object literals — otherwise masking fails open on everyday TS.
+    src = """\
+const cfg = { name: 'internal-system-xyz', path: '/etc/secret' };
+const alt = { alias: 'prod', redirectTo: 'internal/route', outlet: 'secret' };
+"""
+    registry = StringMaskRegistry()
+    masked = mask_strings_angular_typescript(src, registry)
+
+    for leaked in ("internal-system-xyz", "/etc/secret", "internal/route",
+                   "secret", "prod"):
+        assert leaked not in masked
+    assert len(registry.to_dict()) == 5
+
+
+def test_mask_angular_masks_generic_calls():
+    # trigger/state/transition/query are only Angular animation DSL inside a
+    # decorator; as bare method calls they must be masked.
+    src = """\
+db.query('SELECT ssn FROM customers');
+machine.state('prod-db-01');
+fsm.transition('to-classified');
+"""
+    registry = StringMaskRegistry()
+    masked = mask_strings_angular_typescript(src, registry)
+
+    for leaked in ("SELECT ssn FROM customers", "prod-db-01", "to-classified"):
+        assert leaked not in masked
+
+
+def test_mask_angular_ternary_does_not_leak():
+    # `... name : 'fallback'` ends in a scalar-key shape but is a ternary,
+    # not decorator metadata — it must be masked.
+    src = "const x = cond ? name : 'fallback-secret-token';\n"
+    registry = StringMaskRegistry()
+    masked = mask_strings_angular_typescript(src, registry)
+
+    assert "fallback-secret-token" not in masked
+
+
+def test_mask_angular_style_key_outside_decorator_fails_closed():
+    # A `styles:` key on a generic object (no decorator) must not exempt the
+    # array contents, and an unrelated secret after it must still be masked.
+    src = """\
+const theme = { styles: ['-----BEGIN PRIVATE KEY-----'] };
+const apiKey = 'sk-live-super-secret';
+"""
+    registry = StringMaskRegistry()
+    masked = mask_strings_angular_typescript(src, registry)
+
+    assert "BEGIN PRIVATE KEY" not in masked
+    assert "sk-live-super-secret" not in masked
+
+
+def test_mask_angular_preserves_animation_dsl_inside_decorator():
+    # Genuine animation metadata inside @Component is structural and preserved.
+    src = """\
+import { Component } from '@angular/core';
+import { trigger, state } from '@angular/animations';
+@Component({
+  selector: 'app-fade',
+  animations: [trigger('fade', [state('active', style({}))])],
+})
+export class FadeComponent { note = 'mask me'; }
+"""
+    registry = StringMaskRegistry()
+    masked = mask_strings_angular_typescript(src, registry)
+
+    assert "'fade'" in masked
+    assert "'active'" in masked
+    assert "mask me" not in masked
 
 
 def test_mask_angular_preserves_inline_template_and_styles():
@@ -453,6 +527,28 @@ export class PayrollComponent { note = `mask this`; }
     assert "`p { color: red; }`" in masked
     assert "'.payroll { display: block; }'" in masked
     assert "mask this" not in masked
+
+
+def test_strip_stylesheet_trailing_line_comment():
+    src = ".widget { color: red; } // comment about internal system\n"
+    stripped = strip_comments_stylesheet(src)
+    assert "internal system" not in stripped
+    assert ".widget" in stripped
+    assert "color: red;" in stripped
+
+
+def test_strip_stylesheet_full_line_comment():
+    src = "// leading note about secret-project\n.widget { color: red; }\n"
+    stripped = strip_comments_stylesheet(src)
+    assert "secret-project" not in stripped
+    assert ".widget" in stripped
+
+
+def test_strip_stylesheet_preserves_url_scheme():
+    # `//` inside an unquoted URL scheme must not be mistaken for a comment.
+    src = ".bg { background: url(http://example.com/img.png); }\n"
+    stripped = strip_comments_stylesheet(src)
+    assert "http://example.com/img.png" in stripped
 
 
 def test_unmask_any_quote_style():

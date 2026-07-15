@@ -46,6 +46,8 @@ The project language is inferred from the entry file's extension (`.java` → Sp
 
 Angular is inferred from conventional Angular filenames such as `.component.ts`, `.service.ts`, `.module.ts`, `.directive.ts`, `.pipe.ts`, `.guard.ts`, `.resolver.ts`, `.interceptor.ts`, and `.routes.ts`. For other Angular `.ts` files, pass `--lang angular` explicitly.
 
+> **Caveat:** some of these conventions (`.service.ts`, `.module.ts`) are also used by NestJS backends, which will therefore be inferred as Angular. Pass `--lang react` (or the appropriate language) to override when tracing a non-Angular TypeScript project.
+
 ### 1. Interactive mode
 
 Run the script without arguments:
@@ -327,15 +329,17 @@ extracted/
 
 Angular TypeScript comments and `console.*` statements follow the same CLI options as other source types. HTML comments and component stylesheet comments are also stripped by default.
 
-When `--mask-strings` is enabled, ordinary TypeScript literals are replaced with reversible `STR_n` placeholders. Angular structural strings are kept readable after applying configured mappings, including:
+When `--mask-strings` is enabled, ordinary TypeScript literals are replaced with reversible `STR_n` placeholders. Angular *structural* strings are kept readable after applying configured mappings, but only when they appear inside a real Angular metadata decorator (`@Component`, `@Directive`, `@Pipe`, `@Injectable`, `@NgModule`) or property decorator (`@Input`, `@Output`, ...). Inside those spans the following are preserved:
 
 - Component selectors.
-- Inline templates and styles.
+- Inline templates and styles (`template`, `styles`, `styleUrls`).
 - `templateUrl`, `styleUrl`, and `styleUrls` paths.
-- Route paths and redirects.
-- Pipe names and common decorator aliases.
+- Route paths and redirects declared in the decorator.
+- Pipe names, `providedIn`, animation DSL, and common decorator aliases.
 
-This preserves the relationships between the component, template, stylesheet, routes, directives, and pipes for external analysis. Literal text and attributes in external HTML or stylesheets are transformed through explicit mappings rather than blanket string masking.
+This preserves the relationships between the component, template, stylesheet, routes, directives, and pipes for external analysis. The exemptions are deliberately scoped to decorator context: identically shaped keys or calls in ordinary code — `{ name: '...' }`, `db.query('...')`, `cond ? name : '...'` — are masked like any other literal, so masking never fails open on everyday TypeScript.
+
+Note that `--mask-strings` applies only to TypeScript (`.ts`) files. It does **not** apply to `.html` templates or `.css`/`.scss`/`.sass`/`.less`/`.styl` stylesheets at all — literal text and attributes in those files are transformed through explicit mappings rather than blanket string masking, so sensitive free text there is not automatically masked.
 
 **3. Generate Angular tests externally.** Carry out the sanitized Angular files and `CLAUDE_PROMPT.txt`, but keep `mapping.json` inside the airgap. The prompt requests isolated Jasmine tests using Angular TestBed and mocks for injected collaborators.
 

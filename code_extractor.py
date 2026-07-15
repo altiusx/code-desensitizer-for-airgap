@@ -267,8 +267,11 @@ def _angular_resource_dependency(spec: str, importing_file: Path,
     try:
         module_id = candidate.relative_to(src_root.resolve()).as_posix()
     except ValueError:
-        # Keep extraction bounded by the configured source root.
-        return None
+        # Referenced outside the source root: we deliberately don't extract it,
+        # but keep it visible as an unresolved (✗) dependency rather than
+        # dropping it silently — mirroring how out-of-project TS imports are
+        # surfaced. The sanitized component still references this path.
+        return spec, None
     return module_id, candidate if candidate.is_file() else None
 
 
@@ -291,9 +294,12 @@ def angular_find_deps(source: str, file_path: Path, scope: str,
 def classify_angular(module_id: str, source: str) -> str:
     """Classify Angular source and component-resource files for the checklist."""
     path = module_id.lower()
-    if path.endswith(".component.html"):
+    # Any HTML/stylesheet resource is a template/style — including shared ones
+    # referenced by more than one component — so a plain .scss is never
+    # mistaken for a module (and listed as a mock collaborator in the prompt).
+    if path.endswith(".html"):
         return "template"
-    if any(path.endswith(f".component{ext}") for ext in ANGULAR_RESOURCE_EXTS - {".html"}):
+    if any(path.endswith(ext) for ext in ANGULAR_RESOURCE_EXTS - {".html"}):
         return "style"
     if path.endswith((".routing.module.ts", ".routes.ts")):
         return "routing"
@@ -1016,26 +1022,102 @@ STYLESHEET_COMMENT_OR_STRING_RE = re.compile(
     r'("[^"\\]*(?:\\.[^"\\]*)*")'
     r"|('[^'\\]*(?:\\.[^'\\]*)*')"
     r"|(/\*.*?\*/)"
-    r"|(^[ \t]*//[^\n]*)",
+    # SCSS/Sass/Less `//` line comments — both full-line and trailing
+    # (`color: red; // note`). Only fire when the `//` starts a line or is
+    # preceded by whitespace/`;`/`{`/`}`, so URL schemes like `http://` inside
+    # an unquoted `url(...)` are left intact.
+    r"|(^[ \t]*//[^\n]*|(?<=[ \t;{}])//[^\n]*)",
     re.DOTALL | re.MULTILINE,
 )
 
 # Angular metadata strings carry structural information needed to understand
 # and compile the extracted feature. They are renamed by the normal mapping
 # pass, but deliberately not replaced with opaque STR_n placeholders.
+#
+# CRITICAL: these key-based exemptions are only safe when the string is
+# genuinely inside an Angular metadata decorator argument (@Component(...),
+# @Directive(...), @Pipe(...), @Injectable(...), @NgModule(...)). Applied to
+# arbitrary code they would fail open — `{ name: 'secret' }`, `db.query('...')`
+# and `cond ? name : 'secret'` all superficially match these key/call shapes.
+# `mask_strings_angular_typescript` gates every exemption below on real
+# decorator context tracked by `_AngularDecoratorContext`.
 ANGULAR_STRUCTURAL_SCALAR_RE = re.compile(
     r"\b(?:selector|template|templateUrl|styleUrl|path|redirectTo|outlet|"
     r"providedIn|name|alias)\s*:\s*$"
 )
-ANGULAR_STRUCTURAL_ARRAY_RE = re.compile(
-    r"\b(?:styles|styleUrls)\s*:\s*\[[^\]]*$", re.DOTALL
-)
+# Only strings that are direct arguments to an Angular property decorator,
+# e.g. @Input('alias') — this shape is self-anchored to the `@Decorator(`
+# token, so it is safe to honour regardless of the surrounding span.
 ANGULAR_DECORATOR_STRING_RE = re.compile(
     r"@(?:Input|Output|HostBinding|HostListener|Attribute)\s*\(\s*$"
 )
+# Angular animation DSL calls (trigger/state/transition/query). These only
+# carry structural meaning inside an @Component animations: array, so the
+# masker requires an enclosing decorator span before honouring them.
 ANGULAR_ANIMATION_STRING_RE = re.compile(
     r"\b(?:trigger|state|transition|query)\s*\(\s*$"
 )
+# Metadata decorators whose argument object is the only place the key-based
+# exemptions above are trusted.
+ANGULAR_METADATA_DECORATOR_RE = re.compile(
+    r"@(?:Component|Directive|Pipe|Injectable|NgModule)\s*$"
+)
+# A `styles`/`styleUrls` key immediately preceding an opening `[`.
+ANGULAR_STYLE_ARRAY_KEY_RE = re.compile(r"\b(?:styles|styleUrls)\s*:\s*$")
+
+
+class _AngularDecoratorContext:
+    """
+    Tracks, while walking a file's JS/TS *code* segments left-to-right,
+    whether the current position sits inside an Angular metadata decorator
+    argument (``@Component(...)`` and friends) and, more precisely, inside a
+    ``styles``/``styleUrls`` array within one.
+
+    String-masking exemptions are scoped to these spans so that ordinary
+    TypeScript — generic object literals, method calls, ternaries — is masked
+    normally instead of leaking through key/call-shaped regexes.
+    """
+
+    def __init__(self):
+        self._paren_depth = 0
+        self._decorator_paren_depth = None  # paren depth of the open decorator arg
+        self._bracket_base = 0              # bracket-stack size when the span opened
+        self._bracket_stack = []            # one bool per open '[': True = style array
+        self._tail = ""                     # recent code, for token lookbehind
+
+    @property
+    def in_decorator(self) -> bool:
+        return self._decorator_paren_depth is not None
+
+    @property
+    def in_style_array(self) -> bool:
+        return self.in_decorator and any(self._bracket_stack)
+
+    def feed_code(self, text: str):
+        """Advance the context state over one CODE segment."""
+        for ch in text:
+            if ch == "(":
+                self._paren_depth += 1
+                if (self._decorator_paren_depth is None
+                        and ANGULAR_METADATA_DECORATOR_RE.search(self._tail)):
+                    self._decorator_paren_depth = self._paren_depth
+                    self._bracket_base = len(self._bracket_stack)
+            elif ch == ")":
+                if (self._decorator_paren_depth is not None
+                        and self._paren_depth == self._decorator_paren_depth):
+                    # Leaving the decorator argument — fail closed on any
+                    # style arrays that were still open inside it.
+                    self._decorator_paren_depth = None
+                    del self._bracket_stack[self._bracket_base:]
+                self._paren_depth = max(0, self._paren_depth - 1)
+            elif ch == "[":
+                is_style = bool(self.in_decorator
+                                and ANGULAR_STYLE_ARRAY_KEY_RE.search(self._tail))
+                self._bracket_stack.append(is_style)
+            elif ch == "]":
+                if self._bracket_stack:
+                    self._bracket_stack.pop()
+            self._tail = (self._tail + ch)[-64:]
 
 
 def strip_comments_angular_html(source: str) -> str:
@@ -1062,19 +1144,29 @@ def mask_strings_angular_typescript(source: str,
     """
     out = []
     code_tail = ""
+    ctx = _AngularDecoratorContext()
+
+    def is_structural() -> bool:
+        # Style arrays are self-identifying; scalar keys and animation calls
+        # are only trusted inside a real @Component/@Directive/... span, so
+        # generic `name:`/`path:`/`.query(` in ordinary code still gets masked.
+        if ctx.in_style_array:
+            return True
+        return ctx.in_decorator and (
+            ANGULAR_STRUCTURAL_SCALAR_RE.search(code_tail) or
+            ANGULAR_ANIMATION_STRING_RE.search(code_tail))
+
     for kind, segment in _scan_js(source):
-        structural = (ANGULAR_STRUCTURAL_SCALAR_RE.search(code_tail) or
-                      ANGULAR_STRUCTURAL_ARRAY_RE.search(code_tail) or
-                      ANGULAR_DECORATOR_STRING_RE.search(code_tail) or
-                      ANGULAR_ANIMATION_STRING_RE.search(code_tail))
         if kind == "string":
-            if _SPECIFIER_CONTEXT_RE.search(code_tail) or structural:
+            if (_SPECIFIER_CONTEXT_RE.search(code_tail)
+                    or ANGULAR_DECORATOR_STRING_RE.search(code_tail)
+                    or is_structural()):
                 out.append(segment)
             else:
                 quote = segment[0]
                 out.append(f"{quote}{registry.add(segment)}{quote}")
         elif kind == "template":
-            if structural or "${" in segment:
+            if "${" in segment or is_structural():
                 out.append(segment)
             else:
                 out.append(f"`{registry.add(segment)}`")
@@ -1082,6 +1174,7 @@ def mask_strings_angular_typescript(source: str,
             out.append(segment)
             if kind == "code":
                 code_tail = (code_tail + segment)[-500:]
+                ctx.feed_code(segment)
     return "".join(out)
 
 
@@ -1408,11 +1501,15 @@ def _java_pkg_path_variants(frm: str, to: str) -> list:
 
 
 def _react_pkg_path_variants(frm: str, to: str) -> list:
-    variants = [(frm, to)]
-    alt = (frm.replace("/", os.sep), to.replace("/", os.sep))
-    if alt != variants[0]:
-        variants.append(alt)
-    return variants
+    """Emit POSIX and Windows separator variants unconditionally, so a tree
+    sanitized on one OS still renames correctly when reversed on the other
+    (rather than depending on the host's os.sep)."""
+    candidates = [
+        (frm, to),
+        (frm.replace("/", os.sep), to.replace("/", os.sep)),
+        (frm.replace("/", "\\"), to.replace("/", "\\")),
+    ]
+    return list(dict.fromkeys(candidates))
 
 
 def _angular_pkg_path_variants(frm: str, to: str) -> list:
@@ -1826,9 +1923,9 @@ def interactive_reverse():
 
 def interactive_menu():
     print()
-    print(bold("╔═══════════════════════════════════════════════╗"))
+    print(bold("╔═════════════════════════════════════════════════╗"))
     print(bold("║ Code Extractor & Sanitizer (Java/React/Angular) ║"))
-    print(bold("╚═══════════════════════════════════════════════╝"))
+    print(bold("╚═════════════════════════════════════════════════╝"))
     print()
     print("  1. Trace dependencies & extract sanitized files")
     print("  2. Reverse sanitization on generated test files")
