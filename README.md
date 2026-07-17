@@ -17,10 +17,11 @@ We can utilize online AI coding assistants or agents to generate the test cases 
 ## Workflow
 
 1. Desensitize relevant on-premise source code with a custom on-premise script
-2. Bring out desensitized source code to internet
-3. Use online AI coding assistants/agents to generate test cases
-4. Bring generated test back into airgap env
-5. Run `reverse` to restore the original names
+2. Review the generated transfer audit and `approve` the output
+3. Bring out desensitized source code to internet
+4. Use online AI coding assistants/agents to generate test cases
+5. Bring generated test back into airgap env
+6. Run `reverse` to restore the original names
 
 ## Requirements
 
@@ -29,7 +30,7 @@ We can utilize online AI coding assistants or agents to generate the test cases 
 
 ## Usage
 
-The script supports an interactive menu and two CLI subcommands:
+The script supports an interactive menu and four CLI subcommands:
 
 ```bash
 # Interactive mode
@@ -39,6 +40,8 @@ python code_extractor.py
 python code_extractor.py trace --entry path/to/MyService.java --base com.mycompany --src src/main/java --out ./extracted
 python code_extractor.py trace --entry src/components/MyWidget.tsx --src src --out ./extracted
 python code_extractor.py trace --entry src/app/widgets/widget.component.ts --lang angular --src src --out ./extracted
+python code_extractor.py audit --dir ./extracted
+python code_extractor.py approve --dir ./extracted --hash <hash from TRANSFER_AUDIT.txt>
 python code_extractor.py reverse --mapping ./extracted/mapping.json --dir ./generated-tests
 ```
 
@@ -116,9 +119,9 @@ Arguments:
 - `--keep-doc-tags`: Keep `@author` / `@since` Javadoc/JSDoc tags instead of stripping them
 - `--keep-loggers`: Keep logger statements (`log.*` for Java, `console.*` for React) instead of stripping them
 - Angular also uses `--keep-loggers` for `console.*` statements
-- `--mask-strings`: Replace string literals with `STR_n` placeholders (import specifiers are never masked); the originals are recorded in `mapping.json` and restored by `reverse`
+- `--no-mask-strings`: Keep string literals instead of masking them with `STR_n` placeholders
 
-> **Changed defaults:** comments, doc tags, and loggers are now stripped by default on the CLI (matching interactive mode). The old `--strip-javadoc` / `--strip-loggers` flags are accepted as no-ops for backward compatibility.
+> **Changed defaults (fail closed):** every protection is now ON by default — comments, doc tags, and loggers are stripped, and string literals are masked with `STR_n` placeholders (import specifiers are never masked; the originals are recorded in `mapping.json` and restored by `reverse`). Use the `--keep-*` / `--no-mask-strings` flags to opt out; any disabled protection is called out in a warning banner at extraction time and its residue shows up in the transfer audit. The old `--strip-javadoc` / `--strip-loggers` / `--mask-strings` flags are accepted as no-ops for backward compatibility.
 
 How dependencies are traced:
 
@@ -129,22 +132,48 @@ How dependencies are traced:
 The trace step writes these artifacts into the output directory:
 
 - Sanitized source files
-- `mapping.json` (includes the project language so `reverse` auto-detects it, and — when `--mask-strings` is used — the masked string literals for restoration)
+- `mapping.json` (includes the project language so `reverse` auto-detects it, and the masked string literals for restoration)
 - `CLAUDE_PROMPT.txt`
 - `REVERSE_INSTRUCTIONS.txt` (the exact `reverse` command to run later)
+- `TRANSFER_AUDIT.txt` / `TRANSFER_AUDIT.json` (the residual-content report — see the next section)
 
 > **Security note:** `mapping.json` maps the sanitized names back to the sensitive originals. Keep it inside the airgap — never share it alongside the sanitized files. The repository's `.gitignore` excludes `extracted/` and `mapping.json` for this reason.
 
 <img src="assets/code-desensitizer-results.png" alt="Extractor results" width="650" />
 
 
-### 3. Generate tests externally
+### 3. Review the transfer audit and approve the output
+
+The sanitizer is a denylist — it can only transform what the mapping names. Two code-side gates run after every extraction so that what it *didn't* transform is verified and reviewed before anything leaves:
+
+**Runtime verification (automatic, hard gate).** Every emitted file's content and path must be a *fixed point* of the mapping: re-applying the mapping changes nothing. A violation means a sensitive name escaped the renamer; the extraction aborts with exit code 2 and the output must not be transferred.
+
+**Residual-content audit (human gate).** Extraction also writes `TRANSFER_AUDIT.txt`, a recall-oriented report of everything that survived sanitization untransformed:
+
+- **Blocking** findings — classification banner/portion markings (`SECRET//NOFORN`, `(S//NF)`, `FOUO`, ...) and verification failures. Output with blocking findings can never be approved; fix the content and re-extract.
+- **Review** findings — sensitive-shaped content: private key blocks, AWS keys, JWTs, IP addresses, emails, URLs, UNC paths, GUIDs, credential-looking assignments, and high-entropy tokens.
+- **Residual content** — every surviving string literal, comment, HTML text node and attribute value, and 4+ digit numeric constant, with `file:line`.
+- The **unmapped identifier vocabulary** — every identifier in the output that the mapping did not produce, by frequency. This is the reviewer's answer to "is the mapping complete?": every name on this list transfers as-is.
+
+The output directory is **not approved for transfer** until a human reviews the report and records approval of its exact content hash:
+
+```bash
+# after reviewing TRANSFER_AUDIT.txt
+python code_extractor.py approve --dir ./extracted --hash <12-char hash from the report>
+
+# re-check at any time (exit 0 = approved & unchanged, 1 = needs review, 2 = blocking findings)
+python code_extractor.py audit --dir ./extracted
+```
+
+Approval is bound to the audited bytes: any change to the output after approval invalidates it, and a stale or wrong hash is refused. The `audit` exit codes make the gate scriptable — a transfer wrapper can refuse to package a directory unless `audit` exits 0.
+
+### 4. Generate tests externally
 
 Copy the extracted sanitized source files and the generated `CLAUDE_PROMPT.txt` into your online coding assistant or agent of choice. For Spring Boot the prompt asks for JUnit 5 tests with Mockito and AssertJ; for React it asks for Jest or Vitest tests with React Testing Library.
 
 For Angular, the generated prompt asks for Jasmine tests using Angular TestBed and includes referenced component templates and styles in the extraction set.
 
-### 4. Reverse sanitization
+### 5. Reverse sanitization
 
 After you bring the generated tests back into the airgap environment, use the `reverse` command to restore the original names:
 
@@ -166,7 +195,7 @@ Arguments:
 Safety behavior:
 
 - Before changing anything, `reverse` copies the whole target directory to `<dir>.backup-<timestamp>` (disable with `--no-backup`).
-- String literals masked by `--mask-strings` are restored first, then names are un-renamed — so sensitive values inside strings come back exactly.
+- Masked string literals are restored first, then names are un-renamed — so sensitive values inside strings come back exactly.
 - A `.code_extractor_reversed.json` marker records the mapping fingerprint; running `reverse` twice with the same mapping is refused (double-applying renames could corrupt names) unless you pass `--force`.
 
 ## Example walkthrough (React)
@@ -329,7 +358,7 @@ extracted/
 
 Angular TypeScript comments and `console.*` statements follow the same CLI options as other source types. HTML comments and component stylesheet comments are also stripped by default.
 
-When `--mask-strings` is enabled, ordinary TypeScript literals are replaced with reversible `STR_n` placeholders. Angular *structural* strings are kept readable after applying configured mappings, but only when they appear inside a real Angular metadata decorator (`@Component`, `@Directive`, `@Pipe`, `@Injectable`, `@NgModule`) or property decorator (`@Input`, `@Output`, ...). Inside those spans the following are preserved:
+With string masking (on by default), ordinary TypeScript literals are replaced with reversible `STR_n` placeholders. Angular *structural* strings are kept readable after applying configured mappings, but only when they appear inside a real Angular metadata decorator (`@Component`, `@Directive`, `@Pipe`, `@Injectable`, `@NgModule`) or property decorator (`@Input`, `@Output`, ...). Inside those spans the following are preserved:
 
 - Component selectors.
 - Inline templates and styles (`template`, `styles`, `styleUrls`).
@@ -339,7 +368,7 @@ When `--mask-strings` is enabled, ordinary TypeScript literals are replaced with
 
 This preserves the relationships between the component, template, stylesheet, routes, directives, and pipes for external analysis. The exemptions are deliberately scoped to decorator context: identically shaped keys or calls in ordinary code — `{ name: '...' }`, `db.query('...')`, `cond ? name : '...'` — are masked like any other literal, so masking never fails open on everyday TypeScript.
 
-Note that `--mask-strings` applies only to TypeScript (`.ts`) files. It does **not** apply to `.html` templates or `.css`/`.scss`/`.sass`/`.less`/`.styl` stylesheets at all — literal text and attributes in those files are transformed through explicit mappings rather than blanket string masking, so sensitive free text there is not automatically masked.
+Note that string masking applies only to TypeScript (`.ts`) files. It does **not** apply to `.html` templates or `.css`/`.scss`/`.sass`/`.less`/`.styl` stylesheets at all — literal text and attributes in those files are transformed through explicit mappings rather than blanket string masking, so sensitive free text there is not automatically masked.
 
 **3. Generate Angular tests externally.** Carry out the sanitized Angular files and `CLAUDE_PROMPT.txt`, but keep `mapping.json` inside the airgap. The prompt requests isolated Jasmine tests using Angular TestBed and mocks for injected collaborators.
 
@@ -355,10 +384,11 @@ Angular reversal processes `.ts`, `.html`, `.css`, `.scss`, `.sass`, `.less`, an
 
 ## Workflow Summary
 
-1. Run `trace` to extract and sanitize the relevant source code.
-2. Send the sanitized source and prompt file to an online AI assistant.
-3. Save the generated tests in a local directory.
-4. Run `reverse` to restore the original names in the generated tests.
+1. Run `trace` to extract and sanitize the relevant source code (verification and the transfer audit run automatically).
+2. Review `TRANSFER_AUDIT.txt` and run `approve` with the report's hash.
+3. Send the sanitized source and prompt file to an online AI assistant.
+4. Save the generated tests in a local directory.
+5. Run `reverse` to restore the original names in the generated tests.
 
 ## mapping.json schema (v2)
 
@@ -375,7 +405,7 @@ Angular reversal processes `.ts`, `.html`, `.css`, `.scss`, `.sass`, `.less`, an
 - `package`: boundary-aware substitutions — Java packages like `com.classified → com.example`, or React path segments like `features/payroll → features/feature1`. `com.classified` matches inside `com.classified.service` and `"com.classified"`, but never inside `com.classified2`.
 - For Angular, `package` mappings operate on source-tree path segments such as `app/payroll → app/feature1`.
 - `variable`: name mappings that automatically cover PascalCase, camelCase, snake_case, UPPER_SNAKE, kebab-case, plural/singular, and compound identifiers such as `IngredientService`, `INGREDIENT_TYPE`, or `ingredient-row.tsx`.
-- `strings`: written by `--mask-strings` — maps each `STR_n` placeholder back to the original literal so `reverse` can restore it (in any quote style the generated tests use).
+- `strings`: written by string masking (on by default) — maps each `STR_n` placeholder back to the original literal so `reverse` can restore it (in any quote style the generated tests use).
 - Older formats (a bare list, or a dict without `version`/`strings`) still load and are upgraded on save.
 
 ## Notes
@@ -397,12 +427,12 @@ python -m pytest test_code_extractor.py -q
 ## Limitations
 
 - **JS regex literals** are not understood by the comment/string scanner — a `//` or quote inside one (e.g. `/foo\/bar/`) can confuse comment stripping. Rare in React code.
-- **Template literals with `${...}` interpolation** are never masked by `--mask-strings`.
+- **Template literals with `${...}` interpolation** are never masked.
 - **Multi-line logger calls** (`console.log(...)` or `log.info(...)` spanning lines) are not stripped.
 - **Path aliases**: only a single alias (default `@`) mapping to the source root is supported — tsconfig `paths` entries and monorepo workspace packages (`@myco/ui`) are treated as external and skipped.
 - **Dynamic imports** with non-literal arguments (`import(someVar)`) cannot be resolved.
 - **CSS/asset files** are skipped entirely — CSS class names and asset filenames are not sanitized (except where they appear as strings in the traced source).
-- **Java text blocks** (`"""..."""`) and char literals are not masked by `--mask-strings`.
+- **Java text blocks** (`"""..."""`) and char literals are not masked.
 - **Angular structural strings** (`selector`, templates/styles, component resource paths, and route paths) are renamed but intentionally not replaced with `STR_n`; masking them would break the relationships a model needs to analyse. Literal text and attributes in external HTML/stylesheets are also handled by explicit term mappings rather than blanket string masking.
 - **Angular metadata resolution** follows literal component resource paths only. Computed decorator metadata and template-only dependencies introduced indirectly through an NgModule are not discovered unless their TypeScript files are reachable through imports.
 - **Reversal is heuristic**: if an AI-generated test invents an identifier that happens to collide with a mapping's replacement name, `reverse` will rename it too. Use `--dry-run` to preview; a backup is always taken by default.

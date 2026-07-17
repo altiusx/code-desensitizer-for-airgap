@@ -1,5 +1,6 @@
 """Tests for code_extractor.py — run with `python -m pytest test_code_extractor.py -q`."""
 
+import json
 import os
 import re
 import subprocess
@@ -42,6 +43,14 @@ from code_extractor import (
     parse_inline_mappings,
     infer_language,
     REVERSAL_MARKER,
+    verify_sanitized_output,
+    audit_output,
+    audit_hash,
+    write_audit_report,
+    _shannon_entropy,
+    AUDIT_REPORT_TXT,
+    AUDIT_REPORT_JSON,
+    APPROVAL_MARKER,
 )
 
 
@@ -1148,3 +1157,226 @@ def test_cli_trace_missing_mapping_file_fails(tmp_path):
     assert proc.returncode == 1
     assert "Mapping file not found" in proc.stdout + proc.stderr
     assert not out_dir.exists()
+
+
+# ─────────────────────────────────────────────
+#  Transfer verification & audit
+# ─────────────────────────────────────────────
+
+def make_extracted_angular(tmp_path: Path) -> Path:
+    """A sanitized Angular extraction to audit."""
+    src_root = make_angular_project(tmp_path)
+    deps = trace(src_root / "app/payroll/payroll-list.component.ts", "@",
+                 src_root, LANGUAGES["angular"])
+    out_dir = tmp_path / "extracted"
+    write_extracted(deps, ANGULAR_MAPPING, ALL_STRIP, out_dir,
+                    LANGUAGES["angular"], StringMaskRegistry())
+    return out_dir
+
+
+def test_verify_sanitized_output_clean(tmp_path):
+    out_dir = make_extracted_angular(tmp_path)
+    assert verify_sanitized_output(out_dir, ANGULAR_MAPPING, LANGUAGES["angular"]) == []
+
+
+def test_verify_sanitized_output_catches_planted_content(tmp_path):
+    out_dir = make_extracted_angular(tmp_path)
+    victim = out_dir / "app/feature1/widget.service.ts"
+    victim.write_text(victim.read_text(encoding="utf-8") +
+                      "\nconst leak = new PayrollService();\n", encoding="utf-8")
+    violations = verify_sanitized_output(out_dir, ANGULAR_MAPPING, LANGUAGES["angular"])
+    assert len(violations) == 1
+    assert "widget.service.ts" in violations[0]
+    assert "content is not a fixed point" in violations[0]
+
+
+def test_verify_sanitized_output_catches_unsanitized_path(tmp_path):
+    out_dir = make_extracted_angular(tmp_path)
+    stray = out_dir / "app/payroll/stray.ts"
+    stray.parent.mkdir(parents=True, exist_ok=True)
+    stray.write_text("export const x = 1;\n", encoding="utf-8")
+    violations = verify_sanitized_output(out_dir, ANGULAR_MAPPING, LANGUAGES["angular"])
+    assert any("path is not a fixed point" in v and "stray.ts" in v for v in violations)
+
+
+def test_audit_clean_extraction_has_no_blockers(tmp_path):
+    out_dir = make_extracted_angular(tmp_path)
+    audit = audit_output(out_dir, ANGULAR_MAPPING, LANGUAGES["angular"])
+    assert audit["counts"]["block"] == 0
+    # STR_n placeholders are not reported as surviving strings
+    surviving = [f["detail"] for f in audit["findings"]
+                 if f["category"] == "surviving-string"]
+    assert not any(d.startswith("STR_") for d in surviving)
+    # structural metadata (kept readable by design) IS reported for review
+    assert any("widget-list.component.html" in d for d in surviving)
+    # template text is surfaced
+    assert any(f["category"] == "html-text" for f in audit["findings"])
+
+
+def test_audit_classification_marking_blocks(tmp_path):
+    out_dir = make_extracted_angular(tmp_path)
+    victim = out_dir / "app/feature1/widget.service.ts"
+    victim.write_text(victim.read_text(encoding="utf-8") +
+                      "\nconst banner = `SECRET//NOFORN`;\n", encoding="utf-8")
+    audit = audit_output(out_dir, ANGULAR_MAPPING, LANGUAGES["angular"])
+    blockers = [f for f in audit["findings"] if f["severity"] == "block"]
+    assert blockers and blockers[0]["category"] == "classification-marking"
+    assert "widget.service.ts" in blockers[0]["file"]
+
+
+def test_audit_secret_patterns_flagged_with_location(tmp_path):
+    out_dir = make_extracted_angular(tmp_path)
+    notes = out_dir / "app/feature1/notes.ts"
+    notes.write_text(
+        "const contact = 'ops@internal-site.example';\n"
+        "const host = '10.42.7.19';\n"
+        "const pem = '-----BEGIN RSA PRIVATE KEY-----';\n"
+        "const apiKey = 'sk-live-1234-secret';\n"
+        "const port = 65123;\n", encoding="utf-8")
+    audit = audit_output(out_dir, ANGULAR_MAPPING, LANGUAGES["angular"])
+    by_category = {}
+    for f in audit["findings"]:
+        by_category.setdefault(f["category"], []).append(f)
+    assert any("ops@internal-site.example" in f["detail"]
+               for f in by_category["secret-pattern:email"])
+    assert any(f["line"] == 2 for f in by_category["secret-pattern:ipv4"])
+    assert "secret-pattern:private-key" in by_category
+    assert "secret-pattern:credential-assignment" in by_category
+    assert any(f["detail"] == "65123" for f in by_category["numeric-constant"])
+
+
+def test_shannon_entropy_and_high_entropy_finding(tmp_path):
+    assert _shannon_entropy("aaaa") == 0.0
+    assert _shannon_entropy("k9X2mQ8vL4pR7nW3jT6yB1zD") > 4.0
+
+    out_dir = make_extracted_angular(tmp_path)
+    (out_dir / "app/feature1/token.ts").write_text(
+        "const t = 'ghp_k9X2mQ8vL4pR7nW3jT6yB1zD5fH0aSdCeUgI';\n"
+        "const words = 'plain readable text';\n", encoding="utf-8")
+    audit = audit_output(out_dir, ANGULAR_MAPPING, LANGUAGES["angular"])
+    entropy_hits = [f for f in audit["findings"] if f["category"] == "high-entropy-token"]
+    assert any("ghp_" in f["detail"] for f in entropy_hits)
+    assert not any("plain readable" in f["detail"] for f in entropy_hits)
+
+
+def test_audit_unmapped_identifier_inventory(tmp_path):
+    out_dir = make_extracted_angular(tmp_path)
+    audit = audit_output(out_dir, ANGULAR_MAPPING, LANGUAGES["angular"])
+    names = {name for name, _ in audit["unmapped_identifiers"]}
+    # fixture identifiers that no mapping produced must be listed
+    assert "title" in names
+    # names derived from the mapping's "to" side are vocabulary, not findings
+    assert "Widget" not in names
+    assert "widgets" not in names
+
+
+def test_audit_hash_excludes_tool_artifacts(tmp_path):
+    out_dir = make_extracted_angular(tmp_path)
+    before = audit_hash(out_dir)
+    audit = audit_output(out_dir, ANGULAR_MAPPING, LANGUAGES["angular"])
+    write_audit_report(audit, out_dir)
+    (out_dir / "mapping.json").write_text("{}", encoding="utf-8")
+    (out_dir / APPROVAL_MARKER).write_text("{}", encoding="utf-8")
+    assert audit_hash(out_dir) == before
+    # ...but real content changes the hash
+    victim = out_dir / "app/feature1/widget.service.ts"
+    victim.write_text(victim.read_text(encoding="utf-8") + "\n// x\n", encoding="utf-8")
+    assert audit_hash(out_dir) != before
+
+
+def test_write_audit_report_files(tmp_path):
+    out_dir = make_extracted_angular(tmp_path)
+    audit = audit_output(out_dir, ANGULAR_MAPPING, LANGUAGES["angular"])
+    txt_path = write_audit_report(audit, out_dir)
+    assert txt_path == out_dir / AUDIT_REPORT_TXT
+    text = txt_path.read_text(encoding="utf-8")
+    assert audit["audit_hash"] in text
+    assert "DO NOT TRANSFER" in text
+    loaded = json.loads((out_dir / AUDIT_REPORT_JSON).read_text(encoding="utf-8"))
+    assert loaded["audit_hash"] == audit["audit_hash"]
+    assert loaded["counts"] == audit["counts"]
+
+
+def test_cli_defaults_mask_strings_and_write_audit(tmp_path):
+    src_root = make_angular_project(tmp_path)
+    out_dir = tmp_path / "extracted"
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(Path(__file__).parent / "code_extractor.py"), "trace",
+         "--entry", str(src_root / "app/payroll/payroll-list.component.ts"),
+         "--src", str(src_root), "--out", str(out_dir),
+         "--map-package", "app/payroll=app/feature1", "--map-var", "Payroll=Widget"],
+        capture_output=True, text=True, encoding="utf-8", env=env, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    # masking is on by default now
+    component = (out_dir / "app/feature1/widget-list.component.ts").read_text(encoding="utf-8")
+    assert "STR_" in component
+    assert "PROTECTIONS DISABLED" not in proc.stdout
+    # audit ran and the output is gated
+    assert (out_dir / AUDIT_REPORT_TXT).exists()
+    assert (out_dir / AUDIT_REPORT_JSON).exists()
+    assert "NOT APPROVED FOR TRANSFER" in proc.stdout
+    assert "Verified: output is a fixed point" in proc.stdout
+
+
+def test_cli_no_mask_strings_prints_disabled_protection(tmp_path):
+    src_root = make_angular_project(tmp_path)
+    out_dir = tmp_path / "extracted"
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(Path(__file__).parent / "code_extractor.py"), "trace",
+         "--entry", str(src_root / "app/payroll/payroll-list.component.ts"),
+         "--src", str(src_root), "--out", str(out_dir),
+         "--map-package", "app/payroll=app/feature1", "--map-var", "Payroll=Widget",
+         "--no-mask-strings"],
+        capture_output=True, text=True, encoding="utf-8", env=env, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "PROTECTIONS DISABLED: string masking" in proc.stdout
+    component = (out_dir / "app/feature1/widget-list.component.ts").read_text(encoding="utf-8")
+    assert "STR_" not in component
+
+
+def test_cli_audit_approve_lifecycle(tmp_path):
+    src_root = make_angular_project(tmp_path)
+    out_dir = tmp_path / "extracted"
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    extractor = str(Path(__file__).parent / "code_extractor.py")
+
+    def run(*argv):
+        return subprocess.run([sys.executable, extractor, *argv],
+                              capture_output=True, text=True, encoding="utf-8",
+                              env=env, timeout=60)
+
+    proc = run("trace", "--entry", str(src_root / "app/payroll/payroll-list.component.ts"),
+               "--src", str(src_root), "--out", str(out_dir),
+               "--map-package", "app/payroll=app/feature1", "--map-var", "Payroll=Widget")
+    assert proc.returncode == 0, proc.stderr
+
+    # unapproved output: audit exits 1
+    assert run("audit", "--dir", str(out_dir)).returncode == 1
+
+    # wrong hash: approve refuses
+    assert run("approve", "--dir", str(out_dir), "--hash", "0" * 12).returncode == 1
+    assert not (out_dir / APPROVAL_MARKER).exists()
+
+    # correct hash: approve succeeds, audit turns green
+    current = json.loads((out_dir / AUDIT_REPORT_JSON).read_text(encoding="utf-8"))["audit_hash"]
+    assert run("approve", "--dir", str(out_dir), "--hash", current[:12]).returncode == 0
+    assert (out_dir / APPROVAL_MARKER).exists()
+    assert run("audit", "--dir", str(out_dir)).returncode == 0
+
+    # tampering after approval invalidates it
+    victim = out_dir / "app/feature1/widget.service.ts"
+    victim.write_text(victim.read_text(encoding="utf-8") + "\n// drift\n", encoding="utf-8")
+    proc = run("audit", "--dir", str(out_dir))
+    assert proc.returncode == 1
+    assert "changed since it was approved" in proc.stdout
+
+    # a classification marking makes the output unapprovable
+    victim.write_text(victim.read_text(encoding="utf-8") +
+                      "\nconst banner = `SECRET//NOFORN`;\n", encoding="utf-8")
+    assert run("audit", "--dir", str(out_dir)).returncode == 2
+    fresh = json.loads((out_dir / AUDIT_REPORT_JSON).read_text(encoding="utf-8"))["audit_hash"]
+    assert run("approve", "--dir", str(out_dir), "--hash", fresh[:12]).returncode == 2

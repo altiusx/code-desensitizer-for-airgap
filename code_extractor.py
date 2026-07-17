@@ -11,6 +11,8 @@ Usage:
   python code_extractor.py trace   --entry src/components/MyWidget.tsx --lang react --src src --out ./extracted
   python code_extractor.py trace   --entry src/app/widget/widget.component.ts --lang angular --src src --out ./extracted
   python code_extractor.py reverse --mapping mapping.json --dir ./generated-tests
+  python code_extractor.py audit   --dir ./extracted
+  python code_extractor.py approve --dir ./extracted --hash <audit-hash>
   python code_extractor.py         (interactive menu)
 
 Requirements: Python 3.9+, no third-party packages needed.
@@ -1644,8 +1646,13 @@ def print_checklist(deps: dict, lang: dict):
     missing = [(mid, i) for mid, i in deps.items() if i["path"] is None]
     if missing:
         print()
-        print(yellow(f"  {len(missing)} file(s) could not be located automatically."))
-        print(yellow("  Locate them manually or adjust --src."))
+        print(bold(red("═══ Requires manual decision ═══")))
+        print(red(f"  {len(missing)} referenced file(s) will NOT be extracted:"))
+        for module_id, _ in missing:
+            print(red(f"    ✗ {module_id}"))
+        print(yellow("  The sanitized output still references these names. For each one,"))
+        print(yellow("  either locate it (adjust --src / add it manually) or confirm the"))
+        print(yellow("  reference itself is safe to leave in the transferred files."))
 
 
 def write_extracted(deps: dict, mapping_dict: dict, options: dict, out_dir: Path, lang: dict,
@@ -1702,10 +1709,414 @@ Keep it inside the airgap — never share it alongside the sanitized files.
     print(green(f"  Reversal instructions → {instructions_file}"))
 
 
+# ─────────────────────────────────────────────
+#  Transfer verification & audit
+# ─────────────────────────────────────────────
+#
+# The sanitizer is a denylist: it can only transform what the mapping names.
+# Before output leaves the environment, two code-side gates apply:
+#
+#  1. verify_sanitized_output — the fixed-point invariant (re-applying the
+#     mapping changes nothing) enforced at runtime, not just in the tests.
+#     A violation aborts the extraction.
+#  2. audit_output — a recall-oriented residual-content report over the
+#     output (surviving strings/comments/HTML text, secret-shaped patterns,
+#     classification markings, unmapped identifier vocabulary) that a human
+#     must review and explicitly approve before transfer.
+
+AUDIT_REPORT_TXT  = "TRANSFER_AUDIT.txt"
+AUDIT_REPORT_JSON = "TRANSFER_AUDIT.json"
+APPROVAL_MARKER   = ".transfer_approval.json"
+# Artifacts that live in the output directory but must never be transferred
+# (mapping.json is the decoder ring) or are audit metadata about the output
+# rather than part of it. Excluded from scanning and from the audit hash.
+AUDIT_EXCLUDED_FILES = {
+    "mapping.json", "REVERSE_INSTRUCTIONS.txt",
+    AUDIT_REPORT_TXT, AUDIT_REPORT_JSON, APPROVAL_MARKER, REVERSAL_MARKER,
+}
+DO_NOT_TRANSFER = ("mapping.json", "REVERSE_INSTRUCTIONS.txt")
+
+AUDIT_CODE_EXTS       = {".java", ".ts", ".tsx", ".js", ".jsx"}
+AUDIT_STYLESHEET_EXTS = ANGULAR_RESOURCE_EXTS - {".html"}
+
+# Classification banner / portion markings — a hard stop, never approvable.
+CLASSIFICATION_MARKING_RE = re.compile(
+    r"\b(?:TOP\s+SECRET|SECRET|CONFIDENTIAL|UNCLASSIFIED)\s*//"  # SECRET//NOFORN
+    r"|\bNOFORN\b"
+    r"|\bFOUO\b"
+    r"|\bREL\s+TO\s+[A-Z]{2,}"
+    r"|\((?:U|C|S|TS)(?://[A-Z]{2,})+\)"                         # (S//NF)
+)
+
+# Shapes that are sensitive regardless of vocabulary. Recall-oriented: false
+# positives cost a reviewer a glance; false negatives cross the boundary.
+SECRET_PATTERNS = {
+    "private-key":   re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    "aws-access-key": re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    "jwt":           re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+"),
+    "ipv4":          re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}"
+                                r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b"),
+    "email":         re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b"),
+    "url":           re.compile(r"\bhttps?://[^\s\"'`<>)]+"),
+    "unc-path":      re.compile(r"\\\\[\w.$-]+\\[\w.$-]+"),
+    "guid":          re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                                r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"),
+    "credential-assignment": re.compile(
+        r"(?i)\b(?:password|passwd|pwd|api[_-]?key|secret|token)\s*[:=]\s*['\"][^'\"]{4,}"),
+}
+
+_ENTROPY_CANDIDATE_RE = re.compile(r"\b[A-Za-z0-9+/=_-]{24,}\b")
+_ENTROPY_THRESHOLD = 4.0
+_STR_PLACEHOLDER_RE = re.compile(r"STR_\d+")
+_NUMERIC_CONSTANT_RE = re.compile(r"\b\d{4,}\b")
+_IDENTIFIER_RE = re.compile(r"\b[A-Za-z_$][A-Za-z0-9_$]{2,}\b")
+_HTML_TEXT_NODE_RE = re.compile(r">([^<]+)<")
+_HTML_ATTR_VALUE_RE = re.compile(r"""[\w-]+\s*=\s*(?:"([^"]+)"|'([^']+)')""")
+_CSS_URL_RE = re.compile(r"url\(\s*['\"]?([^'\")]+?)['\"]?\s*\)")
+
+# Language keywords and pervasive framework/library names, excluded from the
+# unmapped-identifier inventory to keep it reviewable. Anything domain-shaped
+# should NOT be in this list — the inventory errs toward showing too much.
+_AUDIT_COMMON_IDENTIFIERS = frozenset("""
+abstract any arguments assert async await boolean break byte case catch char
+class const constructor continue debugger declare default delete do double
+else enum export extends false final finally float for from function get goto
+if implements import in instanceof int interface is let long module namespace
+native new null number object of package private protected public readonly
+return set short static string super switch symbol synchronized this throw
+throws transient true try type typeof undefined unknown var void volatile
+while with yield
+String Integer Long Double Float Boolean Character Byte Short Object List Map
+Set ArrayList HashMap HashSet Optional Override Deprecated SuppressWarnings
+Exception RuntimeException IllegalArgumentException Autowired Service
+Repository Controller RestController Entity Table Column Id GeneratedValue
+Test BeforeEach AfterEach Mock InjectMocks
+console log info warn error debug trace length push pop map filter reduce
+forEach indexOf includes slice splice join split trim replace concat then
+catch finally resolve reject Promise Array JSON Math Date RegExp Error window
+document require exports
+React useState useEffect useContext useMemo useCallback useRef Fragment Props
+Component Injectable Directive Pipe NgModule Input Output EventEmitter
+OnInit OnDestroy OnChanges Observable Subject BehaviorSubject Subscription
+HttpClient HttpHeaders HttpParams ActivatedRoute Router RouterModule
+FormBuilder FormGroup FormControl Validators TestBed ComponentFixture
+PipeTransform providedIn selector templateUrl styleUrls standalone imports
+declarations providers bootstrap subscribe unsubscribe pipe ngOnInit
+ngOnDestroy ngOnChanges
+""".split())
+
+
+def _shannon_entropy(token: str) -> float:
+    from math import log2
+    counts = {}
+    for ch in token:
+        counts[ch] = counts.get(ch, 0) + 1
+    n = len(token)
+    return -sum((c / n) * log2(c / n) for c in counts.values())
+
+
+def _audited_files(out_dir: Path) -> list:
+    """(rel_posix, Path) for every file subject to verification/audit."""
+    files = []
+    for p in sorted(out_dir.rglob("*")):
+        if p.is_file() and p.name not in AUDIT_EXCLUDED_FILES:
+            files.append((p.relative_to(out_dir).as_posix(), p))
+    return files
+
+
+def verify_sanitized_output(out_dir: Path, mapping_dict: dict, lang: dict) -> list:
+    """
+    Runtime fixed-point gate: re-applying the mapping to any emitted file's
+    content or path must change nothing. Returns a list of violation strings;
+    non-empty means the output is NOT fully sanitized and must not leave.
+    """
+    violations = []
+    for rel, p in _audited_files(out_dir):
+        mapped = str(apply_path_mappings(rel, mapping_dict, lang))
+        if mapped not in (rel, rel.replace("/", os.sep)):
+            violations.append(f"path is not a fixed point of the mapping: {rel} → {mapped}")
+        try:
+            content = p.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            violations.append(f"non-UTF-8 file in output (cannot verify): {rel}")
+            continue
+        if apply_all_mappings(content, mapping_dict) != content:
+            violations.append(f"content is not a fixed point of the mapping: {rel}")
+    return violations
+
+
+def _finding(category: str, severity: str, rel: str, line: int, detail: str) -> dict:
+    return {"category": category, "severity": severity,
+            "file": rel, "line": line, "detail": detail[:160]}
+
+
+def _line_of(text: str, pos: int) -> int:
+    return text.count("\n", 0, pos) + 1
+
+
+def _audit_scan_lines(rel: str, text: str) -> list:
+    """Pattern scans that apply to every audited file, line by line."""
+    findings = []
+    for i, line in enumerate(text.splitlines(), 1):
+        if CLASSIFICATION_MARKING_RE.search(line):
+            findings.append(_finding("classification-marking", "block", rel, i,
+                                     line.strip()))
+        for name, pattern in SECRET_PATTERNS.items():
+            for m in pattern.finditer(line):
+                findings.append(_finding(f"secret-pattern:{name}", "review",
+                                         rel, i, m.group(0)))
+        for m in _ENTROPY_CANDIDATE_RE.finditer(line):
+            token = m.group(0)
+            if _shannon_entropy(token) > _ENTROPY_THRESHOLD:
+                findings.append(_finding("high-entropy-token", "review",
+                                         rel, i, token))
+    return findings
+
+
+def _audit_scan_code(rel: str, text: str) -> tuple:
+    """Surviving strings/comments/numbers plus identifiers, via _scan_js."""
+    findings = []
+    identifiers = {}
+    pos = 0
+    for kind, segment in _scan_js(text):
+        line = _line_of(text, pos)
+        if kind in ("string", "template"):
+            inner = segment[1:-1].strip()
+            if inner and not _STR_PLACEHOLDER_RE.fullmatch(inner):
+                findings.append(_finding("surviving-string", "info", rel, line, inner))
+        elif kind in ("line_comment", "block_comment"):
+            body = segment.strip("/* \t\n")
+            if body:
+                findings.append(_finding("surviving-comment", "info", rel, line, body))
+        else:  # code
+            for m in _NUMERIC_CONSTANT_RE.finditer(segment):
+                findings.append(_finding("numeric-constant", "info", rel,
+                                         _line_of(text, pos + m.start()), m.group(0)))
+            for m in _IDENTIFIER_RE.finditer(segment):
+                name = m.group(0)
+                if (name not in _AUDIT_COMMON_IDENTIFIERS
+                        and not _STR_PLACEHOLDER_RE.fullmatch(name)):
+                    identifiers[name] = identifiers.get(name, 0) + 1
+        pos += len(segment)
+    return findings, identifiers
+
+
+def _audit_scan_html(rel: str, text: str) -> list:
+    findings, seen = [], set()
+    for m in _HTML_TEXT_NODE_RE.finditer(text):
+        value = m.group(1).strip()
+        if value and value not in seen:
+            seen.add(value)
+            findings.append(_finding("html-text", "info", rel,
+                                     _line_of(text, m.start()), value))
+    for m in _HTML_ATTR_VALUE_RE.finditer(text):
+        value = (m.group(1) or m.group(2) or "").strip()
+        if value and any(c.isalpha() for c in value) and value not in seen:
+            seen.add(value)
+            findings.append(_finding("html-attribute", "info", rel,
+                                     _line_of(text, m.start()), value))
+    return findings
+
+
+def _audit_scan_stylesheet(rel: str, text: str) -> list:
+    findings = []
+    for m in STYLESHEET_COMMENT_OR_STRING_RE.finditer(text):
+        line = _line_of(text, m.start())
+        if m.group(1) or m.group(2):
+            inner = (m.group(1) or m.group(2))[1:-1].strip()
+            if inner:
+                findings.append(_finding("surviving-string", "info", rel, line, inner))
+        else:
+            body = (m.group(3) or m.group(4) or "").strip("/* \t\n")
+            if body:
+                findings.append(_finding("surviving-comment", "info", rel, line, body))
+    for m in _CSS_URL_RE.finditer(text):
+        findings.append(_finding("surviving-string", "info", rel,
+                                 _line_of(text, m.start()), m.group(1)))
+    return findings
+
+
+def _sanitized_vocabulary(mapping_dict: dict) -> set:
+    """Every identifier/path segment the mapping is allowed to have produced."""
+    vocab = set()
+    for m in mapping_dict.get("variable", []):
+        if m.get("to"):
+            vocab.update(generate_name_variations(m["to"]))
+    for m in mapping_dict.get("package", []):
+        if m.get("to"):
+            vocab.update(seg for seg in re.split(r"[./\\]", m["to"]) if seg)
+    return vocab
+
+
+def audit_hash(out_dir: Path) -> str:
+    """Content hash over the audited files — what an approval attests to."""
+    digest = hashlib.sha256()
+    for rel, p in _audited_files(out_dir):
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(p.read_bytes()).hexdigest().encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def audit_output(out_dir: Path, mapping_dict: dict, lang: dict) -> dict:
+    """
+    Residual-content audit over an extraction output directory. Blocking
+    findings (classification markings, verification failures) make the
+    output unapprovable; 'review' and 'info' findings are the material a
+    human reviewer signs off on via `approve`.
+    """
+    findings = [_finding("verification", "block", "", 0, violation)
+                for violation in verify_sanitized_output(out_dir, mapping_dict, lang)]
+    identifiers = {}
+
+    for rel, p in _audited_files(out_dir):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue  # already reported as a blocking verification finding
+        findings.extend(_audit_scan_lines(rel, text))
+        suffix = p.suffix.lower()
+        if suffix in AUDIT_CODE_EXTS:
+            code_findings, file_identifiers = _audit_scan_code(rel, text)
+            findings.extend(code_findings)
+            for name, count in file_identifiers.items():
+                identifiers[name] = identifiers.get(name, 0) + count
+        elif suffix == ".html":
+            findings.extend(_audit_scan_html(rel, text))
+        elif suffix in AUDIT_STYLESHEET_EXTS:
+            findings.extend(_audit_scan_stylesheet(rel, text))
+
+    vocab = _sanitized_vocabulary(mapping_dict)
+    unmapped = sorted(((n, c) for n, c in identifiers.items() if n not in vocab),
+                      key=lambda item: (-item[1], item[0]))
+
+    segments = set()
+    for rel, _ in _audited_files(out_dir):
+        for part in Path(rel).parts:
+            segments.update(seg for seg in part.split(".")[:1] if seg)
+    unmapped_segments = sorted(seg for seg in segments if seg not in vocab)
+
+    severity_order = {"block": 0, "review": 1, "info": 2}
+    findings.sort(key=lambda f: (severity_order[f["severity"]], f["file"], f["line"]))
+    counts = {"block": 0, "review": 0, "info": 0}
+    for f in findings:
+        counts[f["severity"]] += 1
+
+    return {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "output_dir": str(out_dir),
+        "audit_hash": audit_hash(out_dir),
+        "counts": counts,
+        "findings": findings,
+        "unmapped_identifiers": unmapped,
+        "unmapped_path_segments": unmapped_segments,
+    }
+
+
+def write_audit_report(audit: dict, out_dir: Path) -> Path:
+    """Write TRANSFER_AUDIT.txt (for the reviewer) and .json (for tooling)."""
+    lines = [
+        "TRANSFER AUDIT — residual-content report",
+        "=" * 55,
+        f"Generated: {audit['generated_at']}",
+        f"Audit hash: {audit['audit_hash']}",
+        "",
+        "This report lists everything the sanitizer did NOT transform in the",
+        "output. A human must review it and approve the exact content hash",
+        "above before the files leave this environment:",
+        "",
+        f"  python code_extractor.py approve --dir {out_dir} --hash {audit['audit_hash'][:12]}",
+        "",
+        f"DO NOT TRANSFER these files (they stay inside): {', '.join(DO_NOT_TRANSFER)}",
+        "",
+    ]
+    labels = {"block": "BLOCKING — output cannot be approved while these exist",
+              "review": "REVIEW — sensitive-shaped content, confirm each one",
+              "info": "RESIDUAL CONTENT — untransformed text that will transfer"}
+    for severity in ("block", "review", "info"):
+        group = [f for f in audit["findings"] if f["severity"] == severity]
+        lines.append(f"{labels[severity]}: {len(group)}")
+        lines.append("-" * 55)
+        for f in group:
+            location = f"{f['file']}:{f['line']}" if f["file"] else "(output)"
+            lines.append(f"  [{f['category']}] {location}: {f['detail']}")
+        lines.append("")
+
+    lines.append(f"Unmapped identifier vocabulary (top {min(len(audit['unmapped_identifiers']), 50)} "
+                 f"of {len(audit['unmapped_identifiers'])} — every name below transfers as-is):")
+    lines.append("-" * 55)
+    for name, count in audit["unmapped_identifiers"][:50]:
+        lines.append(f"  {name}  ×{count}")
+    lines.append("")
+    lines.append("Path segments not derived from the mapping:")
+    lines.append("-" * 55)
+    for seg in audit["unmapped_path_segments"]:
+        lines.append(f"  {seg}")
+    lines.append("")
+
+    txt_path = out_dir / AUDIT_REPORT_TXT
+    txt_path.write_text("\n".join(lines), encoding="utf-8")
+    (out_dir / AUDIT_REPORT_JSON).write_text(
+        json.dumps(audit, indent=2), encoding="utf-8")
+    return txt_path
+
+
+def load_approval(out_dir: Path) -> dict | None:
+    marker = out_dir / APPROVAL_MARKER
+    if not marker.exists():
+        return None
+    try:
+        return json.loads(marker.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
+def print_audit_summary(audit: dict, out_dir: Path):
+    counts = audit["counts"]
+    print()
+    print(bold("═══ Transfer audit ═══"))
+    print(f"  Blocking: {red(str(counts['block'])) if counts['block'] else green('0')}"
+          f"   Review: {yellow(str(counts['review'])) if counts['review'] else green('0')}"
+          f"   Residual: {counts['info']}"
+          f"   Unmapped identifiers: {len(audit['unmapped_identifiers'])}")
+    print(f"  Report: {out_dir / AUDIT_REPORT_TXT}")
+    if counts["block"]:
+        print(red(bold("  ✗ BLOCKING findings — this output cannot be approved for transfer.")))
+        for f in audit["findings"]:
+            if f["severity"] == "block":
+                location = f"{f['file']}:{f['line']}" if f["file"] else ""
+                print(red(f"    [{f['category']}] {location} {f['detail']}"))
+    else:
+        print(red(bold("  ⚠ NOT APPROVED FOR TRANSFER — review the report, then run:")))
+        print(bold(f"    python code_extractor.py approve --dir {out_dir} "
+                   f"--hash {audit['audit_hash'][:12]}"))
+
+
+_PROTECTION_LABELS = {
+    "strip_comments": "comment stripping",
+    "strip_javadoc":  "doc-tag stripping",
+    "mask_strings":   "string masking",
+    "strip_loggers":  "logger stripping",
+}
+
+
+def print_disabled_protections(options: dict):
+    disabled = [label for key, label in _PROTECTION_LABELS.items()
+                if not options.get(key)]
+    if disabled:
+        print()
+        print(red(bold(f"  ⚠ PROTECTIONS DISABLED: {', '.join(disabled)}")))
+        print(red("    Content those protections would remove will remain in the output"))
+        print(red("    and will be visible in the transfer audit."))
+
+
 def run_extraction(deps: dict, mapping_dict: dict, options: dict, out_dir: Path,
                    lang: dict, lang_key: str, test_framework: str = None,
                    dry_run: bool = False):
     """Extraction pipeline shared by the CLI and interactive frontends."""
+    print_disabled_protections(options)
+
     if dry_run:
         print()
         print(bold("Dry run — planned output:"))
@@ -1716,7 +2127,8 @@ def run_extraction(deps: dict, mapping_dict: dict, options: dict, out_dir: Path,
             rel_path = lang["output_rel_path"](module_id, mapping_dict)
             _, count = apply_all_mappings_count(info["source"], mapping_dict)
             print(f"  Would write: {out_dir / rel_path}  ({count} substitution(s))")
-        for artifact in ("mapping.json", "CLAUDE_PROMPT.txt", "REVERSE_INSTRUCTIONS.txt"):
+        for artifact in ("mapping.json", "CLAUDE_PROMPT.txt", "REVERSE_INSTRUCTIONS.txt",
+                         AUDIT_REPORT_TXT, AUDIT_REPORT_JSON):
             print(f"  Would write: {out_dir / artifact}")
         print(bold("  No files written (--dry-run)."))
         return
@@ -1733,6 +2145,21 @@ def run_extraction(deps: dict, mapping_dict: dict, options: dict, out_dir: Path,
     mapping_dict["strings"] = registry.to_dict()
     save_mappings(mapping_dict, out_dir / "mapping.json")
     write_reverse_instructions(out_dir)
+
+    # Hard gate: the output must be a fixed point of the mapping. A violation
+    # means something escaped the renamer — never hand that to a transfer.
+    violations = verify_sanitized_output(out_dir, mapping_dict, lang)
+    if violations:
+        print()
+        print(red(bold("✗ SANITIZATION VERIFICATION FAILED — output must not be transferred:")))
+        for violation in violations:
+            print(red(f"    {violation}"))
+        sys.exit(2)
+    print(green("  ✓ Verified: output is a fixed point of the mapping"))
+
+    audit = audit_output(out_dir, mapping_dict, lang)
+    write_audit_report(audit, out_dir)
+    print_audit_summary(audit, out_dir)
 
 
 # ─────────────────────────────────────────────
@@ -1802,7 +2229,7 @@ def prompt_options(lang: dict) -> dict:
     return {
         "strip_comments": ask("Strip all comments"),
         "strip_javadoc":  ask(f"Remove @author / @since {lang['doc_tag_label']} tags"),
-        "mask_strings":   ask("Mask string literals", default=False),
+        "mask_strings":   ask("Mask string literals", default=True),
         "strip_loggers":  ask(f"Remove {lang['logger_label']}"),
     }
 
@@ -1995,11 +2422,14 @@ def cmd_trace(args):
         print(yellow("[!] --strip-javadoc and --strip-loggers are deprecated no-ops: "
                      "doc tags and loggers are now stripped by default "
                      "(use --keep-doc-tags / --keep-loggers to keep them)."))
+    if args.mask_strings:
+        print(yellow("[!] --mask-strings is a deprecated no-op: string masking is now "
+                     "ON by default (use --no-mask-strings to disable it)."))
 
     options = {
         "strip_comments": not args.keep_comments,
         "strip_javadoc":  not args.keep_doc_tags,
-        "mask_strings":   args.mask_strings,
+        "mask_strings":   not args.no_mask_strings,
         "strip_loggers":  not args.keep_loggers,
     }
 
@@ -2037,6 +2467,73 @@ def cmd_reverse(args):
                             dry_run=args.dry_run, backup=not args.no_backup, force=args.force)
     if result["refused"]:
         sys.exit(1)
+
+
+def _load_audit_context(args) -> tuple:
+    """(out_dir, mapping_dict, lang) shared by the audit/approve commands."""
+    out_dir = Path(args.dir)
+    if not out_dir.is_dir():
+        print(red(f"Output directory not found: {out_dir}"))
+        sys.exit(1)
+    mapping_path = Path(args.mapping) if args.mapping else out_dir / "mapping.json"
+    if mapping_path.exists():
+        mapping_dict = load_mappings(mapping_path)
+    elif args.mapping:
+        print(red(f"Mapping file not found: {mapping_path}"))
+        sys.exit(1)
+    else:
+        print(yellow("[!] No mapping.json found — auditing without mapping context "
+                     "(fixed-point verification and identifier cross-reference degraded)."))
+        mapping_dict = {"package": [], "variable": [], "strings": {}}
+    lang = LANGUAGES[get_language(mapping_dict, getattr(args, "lang", None))]
+    return out_dir, mapping_dict, lang
+
+
+def cmd_audit(args):
+    """Exit 0 = approved & clean, 1 = awaiting approval, 2 = blocking findings."""
+    out_dir, mapping_dict, lang = _load_audit_context(args)
+    audit = audit_output(out_dir, mapping_dict, lang)
+    report = write_audit_report(audit, out_dir)
+    print(green(f"  Audit report → {report}"))
+    print_audit_summary(audit, out_dir)
+
+    if audit["counts"]["block"]:
+        sys.exit(2)
+    approval = load_approval(out_dir)
+    if approval and approval.get("audit_hash") == audit["audit_hash"]:
+        print(green(bold(f"  ✓ APPROVED for transfer at {approval.get('approved_at')} "
+                         f"(hash {audit['audit_hash'][:12]})")))
+        return
+    if approval:
+        print(yellow("  [!] Output changed since it was approved — re-review required."))
+    sys.exit(1)
+
+
+def cmd_approve(args):
+    out_dir, mapping_dict, lang = _load_audit_context(args)
+    audit = audit_output(out_dir, mapping_dict, lang)
+
+    if audit["counts"]["block"]:
+        print_audit_summary(audit, out_dir)
+        print(red(bold("Refusing to approve: blocking findings present.")))
+        sys.exit(2)
+
+    expected = args.hash.strip().lower()
+    if len(expected) < 12 or not audit["audit_hash"].startswith(expected):
+        print(red("Hash mismatch: the reviewed report does not describe the current output."))
+        print(red(f"  current hash: {audit['audit_hash'][:12]}   given: {expected or '(none)'}"))
+        print(red("  Re-run `audit`, review the fresh report, and approve its hash."))
+        sys.exit(1)
+
+    marker = {
+        "approved_at": datetime.now().isoformat(timespec="seconds"),
+        "audit_hash": audit["audit_hash"],
+        "findings": audit["counts"],
+    }
+    (out_dir / APPROVAL_MARKER).write_text(json.dumps(marker, indent=2), encoding="utf-8")
+    print(green(bold(f"✓ Approved for transfer (hash {audit['audit_hash'][:12]}).")))
+    print(green(f"  Marker → {out_dir / APPROVAL_MARKER}"))
+    print(yellow(f"  Remember: {', '.join(DO_NOT_TRANSFER)} stay inside the environment."))
 
 
 def main():
@@ -2079,6 +2576,12 @@ Examples:
   python code_extractor.py reverse \\
     --mapping ./extracted/mapping.json \\
     --dir ./generated-tests
+
+  # Re-run the residual-content audit over extracted output
+  python code_extractor.py audit --dir ./extracted
+
+  # Approve the reviewed output for transfer (hash from TRANSFER_AUDIT.txt)
+  python code_extractor.py approve --dir ./extracted --hash <audit-hash-prefix>
 """)
 
     sub = parser.add_subparsers(dest="command")
@@ -2100,10 +2603,13 @@ Examples:
                    help="Add a variable/class mapping inline (repeatable)")
     t.add_argument("--dry-run",        action="store_true",
                    help="Show what would be written without writing anything")
-    t.add_argument("--keep-comments",  action="store_true",     help="Do not strip comments")
-    t.add_argument("--keep-doc-tags",  action="store_true",     help="Do not strip @author/@since doc tags")
-    t.add_argument("--keep-loggers",   action="store_true",     help="Do not strip logger statements")
-    t.add_argument("--mask-strings",   action="store_true",     help="Mask string literals (recorded in mapping.json for reversal)")
+    t.add_argument("--keep-comments",   action="store_true",    help="Do not strip comments")
+    t.add_argument("--keep-doc-tags",   action="store_true",    help="Do not strip @author/@since doc tags")
+    t.add_argument("--keep-loggers",    action="store_true",    help="Do not strip logger statements")
+    t.add_argument("--no-mask-strings", action="store_true",
+                   help="Do not mask string literals (masking is ON by default; "
+                        "originals are recorded in mapping.json for reversal)")
+    t.add_argument("--mask-strings",   action="store_true",     help=argparse.SUPPRESS)  # deprecated no-op (now the default)
     t.add_argument("--strip-javadoc",  action="store_true",     help=argparse.SUPPRESS)  # deprecated no-op (now the default)
     t.add_argument("--strip-loggers",  action="store_true",     help=argparse.SUPPRESS)  # deprecated no-op (now the default)
 
@@ -2116,11 +2622,29 @@ Examples:
     r.add_argument("--no-backup", action="store_true", help="Skip the automatic backup of the target directory")
     r.add_argument("--force",     action="store_true", help="Re-run even if this directory was already reversed with this mapping")
 
+    a = sub.add_parser("audit", help="Audit extracted output for residual sensitive content")
+    a.add_argument("--dir",     required=True, help="Extraction output directory to audit")
+    a.add_argument("--mapping", default=None,  help="Path to mapping.json (default: <dir>/mapping.json)")
+    a.add_argument("--lang",    choices=list(LANGUAGES), default=None,
+                   help="Override language (default: read from mapping.json)")
+
+    p = sub.add_parser("approve", help="Approve audited output for transfer")
+    p.add_argument("--dir",     required=True, help="Extraction output directory to approve")
+    p.add_argument("--hash",    required=True,
+                   help="Audit hash (≥12 chars) from the reviewed TRANSFER_AUDIT report")
+    p.add_argument("--mapping", default=None,  help="Path to mapping.json (default: <dir>/mapping.json)")
+    p.add_argument("--lang",    choices=list(LANGUAGES), default=None,
+                   help="Override language (default: read from mapping.json)")
+
     args = parser.parse_args()
     if args.command == "trace":
         cmd_trace(args)
     elif args.command == "reverse":
         cmd_reverse(args)
+    elif args.command == "audit":
+        cmd_audit(args)
+    elif args.command == "approve":
+        cmd_approve(args)
     else:
         parser.print_help()
 
