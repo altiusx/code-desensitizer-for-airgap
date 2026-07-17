@@ -2072,8 +2072,20 @@ def load_approval(out_dir: Path) -> dict | None:
         return None
 
 
-def print_audit_summary(audit: dict, out_dir: Path):
+def approval_state(audit: dict, out_dir: Path) -> str:
+    """One of 'blocked', 'approved', 'stale', 'unapproved'."""
+    if audit["counts"]["block"]:
+        return "blocked"
+    approval = load_approval(out_dir)
+    if approval is None:
+        return "unapproved"
+    return "approved" if approval.get("audit_hash") == audit["audit_hash"] else "stale"
+
+
+def print_audit_summary(audit: dict, out_dir: Path, state: str | None = None):
     counts = audit["counts"]
+    if state is None:
+        state = approval_state(audit, out_dir)
     print()
     print(bold("═══ Transfer audit ═══"))
     print(f"  Blocking: {red(str(counts['block'])) if counts['block'] else green('0')}"
@@ -2081,13 +2093,19 @@ def print_audit_summary(audit: dict, out_dir: Path):
           f"   Residual: {counts['info']}"
           f"   Unmapped identifiers: {len(audit['unmapped_identifiers'])}")
     print(f"  Report: {out_dir / AUDIT_REPORT_TXT}")
-    if counts["block"]:
+    if state == "blocked":
         print(red(bold("  ✗ BLOCKING findings — this output cannot be approved for transfer.")))
         for f in audit["findings"]:
             if f["severity"] == "block":
                 location = f"{f['file']}:{f['line']}" if f["file"] else ""
                 print(red(f"    [{f['category']}] {location} {f['detail']}"))
+    elif state == "approved":
+        approval = load_approval(out_dir) or {}
+        print(green(bold(f"  ✓ APPROVED for transfer at {approval.get('approved_at')} "
+                         f"(hash {audit['audit_hash'][:12]})")))
     else:
+        if state == "stale":
+            print(yellow("  [!] Output changed since it was approved — re-review required."))
         print(red(bold("  ⚠ NOT APPROVED FOR TRANSFER — review the report, then run:")))
         print(bold(f"    python code_extractor.py approve --dir {out_dir} "
                    f"--hash {audit['audit_hash'][:12]}"))
@@ -2495,18 +2513,10 @@ def cmd_audit(args):
     audit = audit_output(out_dir, mapping_dict, lang)
     report = write_audit_report(audit, out_dir)
     print(green(f"  Audit report → {report}"))
-    print_audit_summary(audit, out_dir)
+    state = approval_state(audit, out_dir)
+    print_audit_summary(audit, out_dir, state)
 
-    if audit["counts"]["block"]:
-        sys.exit(2)
-    approval = load_approval(out_dir)
-    if approval and approval.get("audit_hash") == audit["audit_hash"]:
-        print(green(bold(f"  ✓ APPROVED for transfer at {approval.get('approved_at')} "
-                         f"(hash {audit['audit_hash'][:12]})")))
-        return
-    if approval:
-        print(yellow("  [!] Output changed since it was approved — re-review required."))
-    sys.exit(1)
+    sys.exit({"approved": 0, "unapproved": 1, "stale": 1, "blocked": 2}[state])
 
 
 def cmd_approve(args):

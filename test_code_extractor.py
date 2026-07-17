@@ -1365,7 +1365,11 @@ def test_cli_audit_approve_lifecycle(tmp_path):
     current = json.loads((out_dir / AUDIT_REPORT_JSON).read_text(encoding="utf-8"))["audit_hash"]
     assert run("approve", "--dir", str(out_dir), "--hash", current[:12]).returncode == 0
     assert (out_dir / APPROVAL_MARKER).exists()
-    assert run("audit", "--dir", str(out_dir)).returncode == 0
+    approved = run("audit", "--dir", str(out_dir))
+    assert approved.returncode == 0
+    # the approved summary must not contradict itself
+    assert "APPROVED for transfer" in approved.stdout
+    assert "NOT APPROVED" not in approved.stdout
 
     # tampering after approval invalidates it
     victim = out_dir / "app/feature1/widget.service.ts"
