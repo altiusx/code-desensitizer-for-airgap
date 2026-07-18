@@ -187,3 +187,92 @@ Per feature: **Inventory → Contract → Build → Verify & ship.**
 2. Name the approvers: engineering supervisor (Tiers 1–2), cyber/SW-assurance fast-track contact (Tier 3).
 3. Fund the gate tooling: scanner integration, egress ledger, logic-pack contract + validators.
 4. Endorse the workforce message: contractors get a real transition story, told early and honestly.
+
+---
+
+## 5. Second look — gaps beyond the founding vision
+
+These are gaps neither the original blueprint nor Section 4's critique covers. Each comes with a concrete proposal.
+
+### 5.1 The bridge cuts both ways: inbound is nearly ungoverned
+
+All governance energy so far went into egress, but this workflow also creates a *standing channel into* a classified network — the direction a real adversary cares about. Threat scenario: the internet GitHub org is compromised (phished contractor account, malicious dependency, poisoned AI-generated code) and a subtle backdoor rides a tagged release through `reverse`, which nobody reads line-by-line because "it's our own code." AI-generated code adds two further inbound problems: **license contamination** (models occasionally reproduce GPL or copyrighted code verbatim — a genuine issue in a government/classified codebase) and sheer volume of code no team member has actually read.
+
+**Proposal — mirror the gates inbound:**
+- Signed tags are the only inbound unit (already policy) — add verification inside.
+- SCA + license scan as a *release gate* in the internet CI, not an advisory job.
+- Mandatory inside diff-review of each release against the previous tag — human, not tool.
+- Confi rebuilds everything from source through its own pipeline as an inbound **gate**, not a habit.
+- An inbound ledger symmetrical to the egress ledger.
+
+> Outbound gates protect the mission; inbound gates protect the network. Both directions, or neither is credible.
+
+### 5.2 The clipboard is the biggest real leak channel, and no gate covers it
+
+The four gates govern *packages*; the daily workflow is developers having hundreds of ad-hoc conversations with internet AI assistants. The realistic leak is not a bad extraction — it is a developer at 6pm pasting an error message, stack trace, or a rule "from memory" into a chatbot. Human memory crosses the airgap every evening and no scanner runs on it.
+
+**Proposal — an AI-usage policy as part of Phase 0:**
+- The only airgap-derived content permitted in any prompt is content that has passed Gate 3. No paraphrasing from memory.
+- Enterprise / zero-data-retention agreements with AI providers, on org accounts only — never personal ones.
+- The LTC world bible baked into repo-level assistant context (CLAUDE.md or equivalent) so the AI itself speaks the fiction and never invites real vocabulary into a conversation.
+
+### 5.3 Angular does not stop existing while we migrate
+
+The legacy app is a production system users depend on for the next 1–3 years: bugfixes and regulatory changes must ship *inside, in the old paradigm*, while the best people are outside in the new one. Unmanaged, legacy sustainment quietly re-absorbs the core team and starves the factory.
+
+**Proposal — a formal strangler policy, decided per feature at inventory time:**
+- **Frozen:** bug-fix only.
+- **Sustained:** contractors own it — a genuine, non-euphemistic contractor role during Phases 1–2.
+- **In-migration:** the Angular version is feature-frozen the day the React contract is egressed, so the port never chases a moving target.
+
+Since the platform is already single-spa, run mixed mode deliberately: swap route-by-route behind the SSPA shell rather than waiting for whole-MFE parity.
+
+### 5.4 mapping.json does not scale from tool artifact to program artifact
+
+Today the mapping is per-extraction and artisanal — whoever runs `trace` invents the aliases. At team scale this produces collisions (two features both mapped to `Item`), contradictions (the same real term mapped two ways, which breaks `reverse` on shared code), and an unowned glossary drifting from the world bible.
+
+**Proposal — a single mapping registry inside the airgap:**
+- One governed, versioned superset mapping (the v2 schema merges cleanly).
+- A named owner who approves new entries.
+- Collision checks run as a blocking pre-commit inside (`validate_mappings` warnings become errors).
+- Every egress ledger entry pinned to a registry version.
+
+Roughly a day's work in the existing tool; it prevents the one failure class that is unrecoverable later — inconsistent reversals silently corrupting integrated code.
+
+### 5.5 The paradigm itself has a bus factor of two
+
+Everything currently lives in two heads. If either founder leaves — or moves fully into management — the workflow degrades into folklore, and folklore is what fails a security audit. The irony: the plan rigorously de-risks *contractor* knowledge while the paradigm's own knowledge is the least-transferred asset in the program.
+
+**Proposal — institutionalization as a Phase 1 exit criterion:**
+- Gates, tiers, and inbound/outbound checklists written into the org's accredited security operating procedures, so the process survives its authors.
+- Runbooks for extraction, egress, integration, and reversal.
+- At least one person outside the founding pair runs a full loop solo before Phase 1 closes.
+
+### 5.6 Nothing verifies the two worlds actually behave the same
+
+Contract tests catch API drift, but the riskiest divergence is behavioral: the fictional logic pack exercises different branches than the real one, so "Playwright green outside" can be true while real rules hit code paths no outside test ever touched. Coverage of the fiction is not coverage of the reality.
+
+**Proposal — a pack-equivalence discipline:**
+- The fictional pack must be structurally isomorphic where it matters: same rule count, same branch shapes, same boundary classes (min/max/empty/overflow) — different values.
+- Generate both packs' skeletons from the same inside-only source of truth so they cannot diverge structurally.
+- Measure branch coverage inside on the first few integrations; if real-pack runs light up untested branches, fix the *pack*, not the tests.
+
+---
+
+## 6. Second look — opportunities not yet claimed
+
+### 6.1 Absorb the vibe-coders instead of racing them
+
+The founding framing is adversarial ("beat them at their own game"). The stronger play: give the fearless GenAI user teams a lane *inside the paradigm*. Hand them the LTC sandbox, the world bible, and the mock scaffold; their prototypes become Tier-1 spec inputs that flow through the gate. Their promises to stakeholders become the backlog — with governance attached. The loudest political threat becomes the requirements pipeline, and stakeholders see one program, not a rivalry.
+
+### 6.2 Use the mock layer to fix the requirements bottleneck, not just the build bottleneck
+
+"Heavy requirements gathering" was a named root cause, yet the plan only accelerates what happens *after* requirements. A running MSW-backed UI is a requirements instrument: put clickable, realistic-data prototypes in front of user representatives in week one and let them react to behavior instead of signing off documents. It is the cheapest change with the largest lead-time effect — and the legitimate version of exactly what the vibe-coders are doing.
+
+### 6.3 Extend the paradigm to Spring before someone decides it is frontend-only
+
+The extractor already speaks Java, and "who builds backend features in the new model?" is currently unanswered. Passive-shell has a clean server analogue: controllers/services built outside against the same OpenAPI contract, rule values externalized to Spring configuration (its native strength), Testcontainers replacing MSW as the outside harness. Running one backend service through the loop in Phase 1 answers the workforce question with evidence instead of a promise.
+
+### 6.4 Make the desensitizer an internal product — political armor
+
+This is surely not the only team in the organization facing "on-prem models are weak, code cannot leave." A sanctioned internal platform ("the secure AI-enablement toolkit") earns budget, allies, and — most valuably — makes the security organization a *co-owner* of the workflow rather than its auditor. Co-owned controls get improved; audited workarounds get shut down. It reframes the team from rule-benders into the team that built the organization's answer.
