@@ -11,7 +11,7 @@ Three honest reasons, no scare stats:
 
 1. **Friction eats our months.** Environment setup, access requests, and pipeline waiting take up more of a delivery cycle than the actual feature does. That's the part we can fix.
 2. **Let's out-finish, not just out-start.** Other teams are already prototyping fast with AI on the public internet. A fast demo is easy — we want our fast path to lead all the way to a real, running feature.
-3. **We rebuild the same plumbing every time.** Auth, API wiring, form validation, test setup — written fresh on every MFE. A lot of that doesn't need to be rewritten again.
+3. **We want proof before it counts.** Building and testing outside means the feature has already been exercised end-to-end by the time it reaches Confi. Integration becomes validation, not discovery.
 
 The point isn't to move faster than is safe. It's to stop spending our speed on friction that has nothing to do with the actual problem — and to make the boring parts (setup, plumbing, waiting) so consistent nobody has to think about them anymore.
 
@@ -30,13 +30,23 @@ Everything actually sensitive — real names, real data, real rule values, `mapp
 
 ---
 
+## Who we are, outside: meet Looking at Trees Corporation
+
+On the internet, we operate as **Looking at Trees Corporation** — a company focused on marketing and specialized trees. LTC is built around five core service lines (think *Brain Partnerships*, *Japanese Ops*, and a few others), each with its own departments and sub-teams — shaped, fittingly, like a tree.
+
+Every screen, flow, and dataset we build outside speaks LTC's language. The real names and structure only get plugged back in once the code is inside.
+
+**One deliberate choice:** LTC's shape is ours to design — it doesn't need to mirror our real org chart one-for-one. Keeping some healthy distance there is a feature, not an accident: the closer a fictional structure mirrors the real one (same number of divisions, same reporting shape), the easier it becomes for someone to connect the dots. A little creative distance costs nothing and buys real cover.
+
+---
+
 ## The part that makes this easy later: staying aligned with Confi
 
 This is the single highest-leverage habit in the whole paradigm. Do these six things consistently and "bringing it inside" becomes closer to a deploy than a rewrite:
 
-1. **Same lint / test / SAST rules** — copy the actual config files over, don't reinvent them.
-2. **Same API contract format (OpenAPI)** as the source of truth on both sides.
-3. **Same folder & module structure and naming conventions** — just wearing our cover names.
+1. **Same lint & static-analysis rules (ESLint, SAST)** — copy the actual configs over, don't reinvent them.
+2. **Same API contract format (OpenAPI)** as the shared source of truth on both sides.
+3. **Same single-spa shell contracts & design-token libraries** Confi's `common-root-config` already provides — plug in, don't rebuild. We're not recreating the shell from scratch outside; we build functional shells against the same tokens and contracts, so what's proven outside plugs straight into the real root config inside.
 4. **Same versioning & tagging approach** — Confi always pulls one known-good, tagged release.
 5. **Dependencies checked against what Confi already allows**, so surprises show up early, not at integration.
 6. **Config (URLs, auth, environment stuff) lives in one clearly separate place** from the feature code.
@@ -62,14 +72,18 @@ One habit does most of the work: run it through the extractor, have a teammate g
 
 ---
 
-## The one tricky part, made simple: real rules and data
+## Elevating "Looking at Trees" to real C3: the code doesn't care, the data does
 
-The app we build outside works off placeholder rules and made-up sample data, so it's fully testable entirely on its own. Once it moves inside, we point it at the real rules and real data instead — similar to swapping an `.env` file, not rewriting the app.
+Whether it's Looking at Trees or the real thing, the components, forms, validation logic, and flows are exactly the same code either way.
 
-- **Outside:** fake but realistic values. Looks and behaves the way the real thing will — enough to build and test the whole feature with confidence.
+What's actually sensitive is almost always the **data** underneath — real customer records, real figures, real identifiers — plus, occasionally, one or two genuinely sensitive rule values.
+
+So outside, the app runs on placeholder data (and placeholder values for the rare sensitive rule). Inside, we point it at the real data instead — closer to swapping an `.env` file than rewriting the app.
+
+- **Outside:** fake but realistic records and figures. Same app, same behavior — nothing real underneath.
 - **Inside:** same components, same tests. Only the values underneath change — reviewed and versioned like everything else we ship.
 
-Some rules will be complex or sensitive enough that we just build them directly inside — that's completely fine. We'll flag those upfront, per feature, so nobody's surprised later.
+Some rules will be sensitive or complex enough that we just build them directly inside — that's completely fine. We'll flag those upfront, per feature, so nobody's surprised later.
 
 ---
 
@@ -81,6 +95,26 @@ Some rules will be complex or sensitive enough that we just build them directly 
 4. **Playwright tests** — real user flows, including error cases, fast and repeatable.
 
 This is the part that actually saves us months: most bugs get caught outside, where fixing them is a two-minute edit instead of a trip through the internal pipeline.
+
+---
+
+## Before any code crosses: a short checklist, every time
+
+1. **Unit tests green** — Jest for React/TypeScript, JUnit for any Java/Spring code involved.
+2. **Static analysis & lint clean** — the same rules Confi uses, not a lighter internet-only version.
+3. **Contract tests pass** — the mocks match the OpenAPI spec exactly.
+4. **Playwright suite green** — full user flows, not just isolated components.
+
+If backend code was touched, its tests travel with it — same bar as the frontend, no exceptions.
+
+---
+
+## An open question, decided case by case: do we rebuild backends outside too?
+
+- **Default — MFE only:** for most features, build the shell outside against a mocked backend. The real Java/Spring service stays right where it is, built and maintained inside as normal.
+- **Case by case — bring the backend along:** when a backend genuinely needs a rewrite — not just a re-skin — build a lean version of it outside too, under the same contract-first approach, tested there, then brought in like everything else.
+
+The question to ask, per feature: does Confi already have a working backend for this? If yes, mock it. If the backend itself is due for a rewrite anyway, build it outside too.
 
 ---
 
@@ -122,7 +156,7 @@ No fixed dates on purpose — each stage ends when the criteria above are actual
 
 ## Being straight about the people side
 
-- **For developers:** more time on the interesting problems, less on environment friction and rebuilding plumbing. The tools handle more of the repetitive part so we can focus on what actually needs a person.
+- **For developers:** more time on the interesting problems, less on environment friction and waiting on access or pipelines. The tools handle more of the repetitive part so we can focus on what actually needs a person.
 - **For contractors:** some roles shift toward integration, environment testing, and configuration management — genuinely valuable, hands-on work, not busywork. Where useful, some may also move toward more BA-style spec work.
 - **For everyone:** nothing about headcount is decided or urgent right now. As things become clearer, we'll say so — plainly and early, not as a surprise later.
 
