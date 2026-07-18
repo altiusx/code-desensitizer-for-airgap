@@ -174,7 +174,7 @@ Per feature: **Inventory → Contract → Build → Verify & ship.**
 
 | KPI | Meaning | Target |
 |---|---|---|
-| Lead time | Spec-frozen → running in Confi, per feature | Weeks; trending down |
+| Two clocks | Time-to-**demo** (spec → clickable mock) and time-to-**production** (spec → running in Confi), published side-by-side | Demo clock matches the vibe-coders; production clock trending down |
 | Integration tax | % of feature effort spent inside after the tag lands | ≤ 15%; rising = drift alarm |
 | Egress SLA & first-pass yield | Gate turnaround vs. matrix; % passing Gate 0 clean | ≥ 90% SLA; yield rising |
 | Pack coverage | % of rules as pack data vs. escape-hatch code | Rising = Phase 3 readiness |
@@ -187,6 +187,7 @@ Per feature: **Inventory → Contract → Build → Verify & ship.**
 2. Name the approvers: engineering supervisor (Tiers 1–2), cyber/SW-assurance fast-track contact (Tier 3).
 3. Fund the gate tooling: scanner integration, egress ledger, logic-pack contract + validators.
 4. Endorse the workforce message: contractors get a real transition story, told early and honestly.
+5. Charter a department working group: one gate standard, shared tooling, and a joint incident-response playbook — before N teams invent N processes (see Section 7).
 
 ---
 
@@ -257,17 +258,34 @@ Contract tests catch API drift, but the riskiest divergence is behavioral: the f
 - Generate both packs' skeletons from the same inside-only source of truth so they cannot diverge structurally.
 - Measure branch coverage inside on the first few integrations; if real-pack runs light up untested branches, fix the *pack*, not the tests.
 
+### 5.7 There is no incident-response plan for the thing that ends the program
+
+The KPI table says one confirmed leakage incident likely ends the program — yet nothing defines what happens in the first 24 hours after a *suspected* leak. Improvising incident response mid-incident is how a recoverable event becomes a fatal one. Note also the hard constraint: a leaked `mapping.json` cannot be "rotated" like a credential — the real names it reveals stay revealed. IR here is about blast-radius containment and demonstrating control, not undo.
+
+**Proposal — a pre-agreed IR playbook, rehearsed once per phase:**
+- **Detect & declare:** anyone can raise a suspected-leak flag, no blame for false alarms; a named incident owner (supervisor) takes command.
+- **Assess:** the egress ledger is the blast-radius instrument — exactly which packages, hashes, and mapping versions could be affected. This is the strongest operational argument for the ledger existing at all.
+- **Contain:** quarantine the affected internet repos (private → archived), suspend egress program-wide until root cause is known, retire affected aliases so future packages don't reinforce the correlation.
+- **Report:** through the organization's proper security channel, proactively. A self-reported near-miss builds credibility; a discovered cover-up ends careers as well as programs.
+
 ---
 
 ## 6. Second look — opportunities not yet claimed
 
-### 6.1 Absorb the vibe-coders instead of racing them
+### 6.1 Win at the production gate (the competitive strategy against fearless-only teams)
 
-The founding framing is adversarial ("beat them at their own game"). The stronger play: give the fearless GenAI user teams a lane *inside the paradigm*. Hand them the LTC sandbox, the world bible, and the mock scaffold; their prototypes become Tier-1 spec inputs that flow through the gate. Their promises to stakeholders become the backlog — with governance attached. The loudest political threat becomes the requirements pipeline, and stakeholders see one program, not a rivalry.
+> Revised after strategic review: the internal GenAI user teams are structured to be *fearless-only* — they carry no security obligations — and they are direct competitors, so collaboration ("absorb them") is off the table.
 
-### 6.2 Use the mock layer to fix the requirements bottleneck, not just the build bottleneck
+This is an **asymmetric race**: they pay none of the security tax, so competing on build-speed means racing on a rigged scoreboard. Their fearlessness, however, is a liability with a delivery date — a vibe-coded prototype has no answer for day 2: real backend integration, classified data handling, accreditation, sustainment, security review. The strategy is therefore to move the finish line to where their model structurally fails:
 
-"Heavy requirements gathering" was a named root cause, yet the plan only accelerates what happens *after* requirements. A running MSW-backed UI is a requirements instrument: put clickable, realistic-data prototypes in front of user representatives in week one and let them react to behavior instead of signing off documents. It is the cheapest change with the largest lead-time effect — and the legitimate version of exactly what the vibe-coders are doing.
+- **Answer the binding question first.** Can they actually ship to production without meeting the security bar we're held to? If *no*, the bar is our moat — make it visible. If *yes*, the problem is organizational inconsistency, and the escalation is legitimate and career-safe: *one production bar, stated once, applied uniformly* — either it binds them too, or we must be released from a standard our competitors are exempt from. Do not build an 18-month strategy before knowing which world applies.
+- **Publish the platform standard.** Their output, to ever ship, must run inside the SSPA shell, pipelines, and backends *this team operates*. Publish a neutral, technical onboarding standard for any MFE entering the production platform: contract-first API spec, test coverage, SAST-clean, dependency policy — the same bar our own MFEs meet, applied uniformly, defensible to any referee. Two outcomes, both wins: they meet the bar (they have adopted our paradigm on our terms) or they stall at the gate (the promise-vs-production gap becomes evidence demonstrated by their own attempt).
+- **Reframe the public metric** from time-to-demo to time-to-production (the "two clocks" KPI), and beat them to the only finish line that counts: get one real feature through the full loop before their first prototype hits the wall.
+- **Never badmouth the demos.** Let the production gate do the arguing.
+
+### 6.2 Match them in demo-space — and fix the requirements bottleneck doing it
+
+The one lane where competing head-to-head *is* winnable: demos. The MSW-backed passive shell carries none of the security tax — mocks touch nothing classified — so at the demo layer this team is exactly as fast as the vibe-coders. Put clickable, realistic-data prototypes in front of stakeholders and user representatives in week one: *fearless demos, disciplined delivery.* This simultaneously fixes the named root cause the plan otherwise skips — heavy requirements gathering — because users react to behavior instead of signing off documents. Cheapest change with the largest lead-time effect.
 
 ### 6.3 Extend the paradigm to Spring before someone decides it is frontend-only
 
@@ -275,4 +293,43 @@ The extractor already speaks Java, and "who builds backend features in the new m
 
 ### 6.4 Make the desensitizer an internal product — political armor
 
-This is surely not the only team in the organization facing "on-prem models are weak, code cannot leave." A sanctioned internal platform ("the secure AI-enablement toolkit") earns budget, allies, and — most valuably — makes the security organization a *co-owner* of the workflow rather than its auditor. Co-owned controls get improved; audited workarounds get shut down. It reframes the team from rule-benders into the team that built the organization's answer.
+This is surely not the only team in the organization facing "on-prem models are weak, code cannot leave." A sanctioned internal platform ("the secure AI-enablement toolkit") earns budget, allies, and — most valuably — makes the security organization a *co-owner* of the workflow rather than its auditor. Co-owned controls get improved; audited workarounds get shut down. It reframes the team from rule-benders into the team that built the organization's answer. Section 7 upgrades this from speculation to fact: the customers already exist.
+
+---
+
+## 7. The department dimension — federate or fragment
+
+> Context: other core teams in the department are pursuing a similar paradigm shift. That changes the risk calculus and the opportunity landscape in four specific ways.
+
+### 7.1 Shared fate on incidents (risk — close jointly)
+
+With N teams running parallel egress workflows, **one team's leak ends the paradigm for all of them**. Leadership reacting to an incident will not distinguish whose gate failed — "the internet development thing caused a spill" is the headline either way. The weakest gate in the department now defines this program's risk, and that gate is outside this team's control.
+
+**Proposal:** a department-level federation, minimal but binding:
+- A **common gate standard** (gates 0–3, approval tiers, egress/inbound ledgers) that every participating team meets — per-team implementations, one bar.
+- **Shared scanner and denylist infrastructure**: the Gate-0 tooling (secret scanners, denylist engine, ledger) built once, operated as internal infrastructure; each team supplies its own term corpus from its own mapping registry.
+- A **joint incident-response playbook** (§5.7) at department level: shared detection/notification channel, one IR command structure, mutual suspension protocol (a confirmed incident anywhere pauses egress everywhere until scoped). Rehearsed jointly.
+
+### 7.2 Fiction hygiene across teams (risk — close jointly)
+
+Multiple fictional universes emitted by the same population of people and orgs is a **triangulation gift** to an observer: shared contributors, shared CI templates, similar repo structures, and correlated commit patterns let someone link the universes together and back out the shared real domain behind them. Rules:
+
+- One fiction per team, never shared, never cross-referenced. Separate internet orgs.
+- Share world-*building* lessons (what makes a fiction robust, naming-vacuum pitfalls) **inside the airgap**; never share world *content* outside it.
+- Commit-identity hygiene as a department norm: org accounts, no personal handles linking a developer across multiple fictional universes.
+
+### 7.3 Write the standard first (opportunity — move now)
+
+Whoever formalizes their gate process first will effectively write the department SOP; every other team gets audited against it later. This team has the head start — the desensitizer exists, the gate design exists, the ledger design exists. Co-author the standard with cyber **now**, and two things follow:
+
+- The §6.4 "internal product" play gains real customers immediately: sibling teams adopt this tooling (extractor, mapping registry, Gate-0 stack, logic-pack contract) rather than building their own, and this team becomes the paradigm's *platform team* instead of one of N users of someone else's rules.
+- The standard is written by the team with the most operational experience, not by whichever team has the loudest incident first.
+
+### 7.4 Cross-team leverage (opportunity — structural)
+
+Sibling teams solve several of this program's hardest staffing problems:
+
+- **Borrowed Gate-2 reviewers:** a reviewer from a sibling team is *genuinely* fresh eyes — they don't share the feature context, so residual meaning and identifying structure jump out at them in ways they cannot for a teammate. Formalize a cross-team review exchange.
+- **Inner-source tooling:** passive-shell engine, schema-driven component library, MSW scaffolds, dependency-delta CI job, mapping-registry tool — built once, co-owned across teams, amortizing platform cost the department is otherwise about to pay N times.
+- **KPI benchmarking:** with N teams running the same paradigm, cross-team comparison *will* happen. Co-defining the metrics (the §4.3 scoreboard) beats being measured by someone else's later.
+- **Approver scaling:** N teams' Tier-3 requests will saturate a single named cyber fast-track contact. The department standard must define an approver *rota* with cross-trained deputies — a role, not a hero.
