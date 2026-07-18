@@ -72,6 +72,19 @@ One habit does most of the work: run it through the extractor, have a teammate g
 
 ---
 
+## The rare occasion we bring code out: how code occasionally leaves Confi
+
+Most of the time, work flows the other direction — spec inside, build outside, tag it, bring it in. But on the odd occasion, code genuinely needs to go the other way, out of Confi. Here's the flow:
+
+1. **Decide what's needed** — almost always a lean spec: routes, contracts, structure. Never a full active repository.
+2. **Run the desensitizer** — our `code_extractor.py` tool strips real names, masks data & strings, and swaps in Looking at Trees terms, automatically, in one pass.
+3. **A teammate checks it** — a second pair of eyes reads the sanitized output before anything leaves, catching what the tool might miss.
+4. **Send it, log it** — out through our approved channel; what left and when gets noted, simply.
+
+`mapping.json` is the one file that turns "Looking at Trees" back into the real thing — it stays inside, always. Everything else is designed to be boring to send.
+
+---
+
 ## Elevating "Looking at Trees" to real C3: the code doesn't care, the data does
 
 Whether it's Looking at Trees or the real thing, the components, forms, validation logic, and flows are exactly the same code either way.
@@ -142,23 +155,35 @@ First pick a medium feature, not the hardest one. Its job is to help us learn th
 
 ---
 
-## Getting there: a few honest stages
+## The three phases, named honestly: where this goes, and why
 
-**Stage 1 — Try it:** pick one real feature, set up matching pipelines & configs outside, run the full loop once start to finish, talk honestly about what was clunky.
+**Phase 1 — Core team goes outside:**
+- Pick a pilot feature, run the full loop end to end
+- Set up matching pipelines & configs outside
+- Contractors take on environment testing, config management, and bringing internet work into Confi — the ingress side
+- Fix the friction we find, together
 
-**Stage 2 — Get comfortable:** a few more features through the loop, fix the friction found in Stage 1, contractors settle into integration & testing roles, the routine starts feeling routine.
+**Phase 2 — Both directions get routine:**
+- More features through the loop; Angular inventory & porting underway
+- The occasional egress flow (Confi → internet) becomes the clear, repeatable process described above
+- Sign-off is quick because the habits are solid
+- We're no longer thinking about this as "new"
 
-**Stage 3 — Make it the norm:** most new work starts outside by default, Angular inventory & porting well underway, sign-off is quick because the habits are solid, we're no longer thinking about this as "new."
+**Phase 3 — Contractor headcount comes down:**
+- Core team absorbs the full loop, both directions, on its own
+- Trigger-based, not date-based — we genuinely don't know when
+- Phases 1 & 2 exist partly to make this transition possible without surprises
+- We're naming it now, not waiting until it's decided to say anything
 
-No fixed dates on purpose — each stage ends when the criteria above are actually true, not when a calendar says so.
+We'd rather be straightforward about where this is headed than let people guess.
 
 ---
 
 ## Being straight about the people side
 
 - **For developers:** more time on the interesting problems, less on environment friction and waiting on access or pipelines. The tools handle more of the repetitive part so we can focus on what actually needs a person.
-- **For contractors:** some roles shift toward integration, environment testing, and configuration management — genuinely valuable, hands-on work, not busywork. Where useful, some may also move toward more BA-style spec work.
-- **For everyone:** nothing about headcount is decided or urgent right now. As things become clearer, we'll say so — plainly and early, not as a surprise later.
+- **For contractors:** some roles shift toward integration, environment testing, and configuration management — the ingress side of the loop, and genuinely valuable, hands-on work, not busywork. Where useful, some may also move toward more BA-style spec work.
+- **For everyone:** Phase 3 means a real reduction in contractor headcount, eventually — we don't know when, but we're naming it now rather than waiting. Phases 1 and 2 exist partly to make that transition possible without anyone being blindsided.
 
 ---
 
