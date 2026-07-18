@@ -180,6 +180,7 @@ Per feature: **Inventory → Contract → Build → Verify & ship.**
 | Pack coverage | % of rules as pack data vs. escape-hatch code | Rising = Phase 3 readiness |
 | Security incidents | Confirmed leakage past Gate 3 | Zero. Non-negotiable. |
 | Bus-factor spread | Contractor duties with runbook + rotated core-team owner | 100% before Phase 3 triggers |
+| Greenlane share | % of Confi deployments entering via the certified Greenlane (vs. manual slow lane); later, # of sibling teams on the standard | Rising = the standard is winning on merit |
 
 ### 4.4 The ask
 
@@ -297,39 +298,64 @@ This is surely not the only team in the organization facing "on-prem models are 
 
 ---
 
-## 7. The department dimension — federate or fragment
+## 7. Lead by example — making this the department standard
 
-> Context: other core teams in the department are pursuing a similar paradigm shift. That changes the risk calculus and the opportunity landscape in four specific ways.
+> Context (verified by asking them): the sibling core teams in the department are **not** running a governed version of this paradigm. They build exactly like the internal user teams — vibe-code on the internet, no version tagging, no pipelines, then bring code straight into Confi to test and deploy. The goal is for this team's paradigm — human-enhanced AI development, pipelines, static analysis and testing all done on the internet in parallel to Confi, then minimal changes inside for expedited testing and deployment — to become the standard others follow.
 
-### 7.1 Shared fate on incidents (risk — close jointly)
+### 7.1 The reality: ungoverned ingress is already happening at department scale
 
-With N teams running parallel egress workflows, **one team's leak ends the paradigm for all of them**. Leadership reacting to an incident will not distinguish whose gate failed — "the internet development thing caused a spill" is the headline either way. The weakest gate in the department now defines this program's risk, and that gate is outside this team's control.
+Every sibling-team import is an unreviewed, unattested channel into the classified network — no tags to diff against, no pipeline evidence, no ledger, code nobody read (least of all AI-generated code produced in the background). Their risk is this program's risk: leadership reacting to an incident will not distinguish whose workflow failed. "The internet development thing caused it" is the headline either way, and today the department's *median* workflow is the one most likely to produce that headline.
 
-**Proposal:** a department-level federation, minimal but binding:
-- A **common gate standard** (gates 0–3, approval tiers, egress/inbound ledgers) that every participating team meets — per-team implementations, one bar.
-- **Shared scanner and denylist infrastructure**: the Gate-0 tooling (secret scanners, denylist engine, ledger) built once, operated as internal infrastructure; each team supplies its own term corpus from its own mapping registry.
-- A **joint incident-response playbook** (§5.7) at department level: shared detection/notification channel, one IR command structure, mutual suspension protocol (a confirmed incident anywhere pauses egress everywhere until scoped). Rehearsed jointly.
+### 7.2 The clock: legislate before the incident
 
-### 7.2 Fiction hygiene across teams (risk — close jointly)
+Post-incident policy is written in panic, and panic policy is blunt — the likely outcome of a first spill, AI-code outage, or audit finding is "no internet development at all," applied department-wide, killing the governed version along with the ungoverned ones. Being the team with a working, demonstrably safe alternative **before** that day changes the conversation from "shut it all down" to "make everyone do it like them." Formalizing the standard with cyber is therefore time-critical, not nice-to-have. First-mover here is survival insurance, not prestige.
 
-Multiple fictional universes emitted by the same population of people and orgs is a **triangulation gift** to an observer: shared contributors, shared CI templates, similar repo structures, and correlated commit patterns let someone link the universes together and back out the shared real domain behind them. Rules:
+### 7.3 The Greenlane: make discipline the fastest path
 
-- One fiction per team, never shared, never cross-referenced. Separate internet orgs.
-- Share world-*building* lessons (what makes a fiction robust, naming-vacuum pitfalls) **inside the airgap**; never share world *content* outside it.
-- Commit-identity hygiene as a department norm: org accounts, no personal handles linking a developer across multiple fictional universes.
+Adoption will not come from mandate; it comes from incentive design. Define a certified inbound route:
 
-### 7.3 Write the standard first (opportunity — move now)
+- A package arriving **with evidence** — signed version tag, green internet pipeline run, SAST/lint reports, dependency manifest matching the approved registry, contract-validation results — qualifies for the **Greenlane**: an expedited Confi pipeline of automated re-verification and deployment, minimal human touch.
+- Code arriving without evidence takes the **slow lane**: full manual security and code review, at whatever pace that queue moves.
 
-Whoever formalizes their gate process first will effectively write the department SOP; every other team gets audited against it later. This team has the head start — the desensitizer exists, the gate design exists, the ledger design exists. Co-author the standard with cyber **now**, and two things follow:
+The evidence bundle is cheap for a governed team (their pipeline produces it as a by-product) and expensive for a vibe-coding team (they'd have to build the discipline to fake it — at which point they've adopted it). Teams switch because gated is *faster*, not because it's virtuous. **The Greenlane is the adoption engine**; propose it to cyber as the department's inbound standard, co-owned.
 
-- The §6.4 "internal product" play gains real customers immediately: sibling teams adopt this tooling (extractor, mapping registry, Gate-0 stack, logic-pack contract) rather than building their own, and this team becomes the paradigm's *platform team* instead of one of N users of someone else's rules.
-- The standard is written by the team with the most operational experience, not by whichever team has the loudest incident first.
+### 7.4 Ship the standard as a starter kit, not a policy document
 
-### 7.4 Cross-team leverage (opportunity — structural)
+Nobody adopts a document. Package the paradigm as a **template repository** a sibling team can fork and be productive in within a day: CI pipelines, the exact ESLint/SAST configs, MSW + Playwright scaffold, thin-API-client structure, extractor integration, world-bible template, gate checklists as PR templates. Then recruit **one sibling team as the first external adopter** and support them through their first full loop — their success is the proof of generality that turns "that team's process" into "the department standard, written by us." This also makes the §6.4 platform play concrete: real customers, real feedback, real political weight.
 
-Sibling teams solve several of this program's hardest staffing problems:
+### 7.5 Federation rules that apply once siblings adopt
 
-- **Borrowed Gate-2 reviewers:** a reviewer from a sibling team is *genuinely* fresh eyes — they don't share the feature context, so residual meaning and identifying structure jump out at them in ways they cannot for a teammate. Formalize a cross-team review exchange.
-- **Inner-source tooling:** passive-shell engine, schema-driven component library, MSW scaffolds, dependency-delta CI job, mapping-registry tool — built once, co-owned across teams, amortizing platform cost the department is otherwise about to pay N times.
-- **KPI benchmarking:** with N teams running the same paradigm, cross-team comparison *will* happen. Co-defining the metrics (the §4.3 scoreboard) beats being measured by someone else's later.
-- **Approver scaling:** N teams' Tier-3 requests will saturate a single named cyber fast-track contact. The department standard must define an approver *rota* with cross-trained deputies — a role, not a hero.
+Carried over from the original federation design, applicable as teams onboard:
+- **Fiction hygiene:** one fictional universe per team, never shared, never cross-referenced; separate internet orgs; commit-identity hygiene so no personal handle links a developer across universes (multiple correlatable fictions from one population is a triangulation gift).
+- **Shared Gate-0 infrastructure:** scanners, denylist engine, and ledger built once, operated as internal infrastructure; each team supplies its own term corpus from its own mapping registry.
+- **Joint incident response** (§5.7) with a mutual-suspension protocol: a confirmed incident anywhere pauses egress everywhere until scoped.
+- **Borrowed Gate-2 reviewers** across teams — genuinely fresh eyes for residual-meaning hunts.
+- **Approver scaling:** a cyber approver rota with cross-trained deputies, not a single named hero, before Tier-3 volume grows N-fold.
+
+---
+
+## 8. When building is commoditized, trust is the product
+
+> Prompted by a tech-lead observation that deserves to shape the whole strategy: *"Building is not the issue now — it's basically pay-to-win. It's really how we can transform their ops and drive adoption. Stuff that AI won't help with."* An incident module in two days with an agent running in the background, while attending meetings, is now ordinary.
+
+### 8.1 Speed is table stakes; the moat moved
+
+If everyone — this team, the user teams, the siblings — can produce working features in days, then development velocity no longer differentiates anyone. The deck's original framing ("we can be fast AND secure") is necessary but not sufficient. What is actually scarce now:
+
+1. **Certification** — the ability to take commodity code *into classified production*: attested, reviewed, accredited, deployable. Nobody else in the department has industrialized this.
+2. **Ops transformation and adoption** — requirements discovery, change management, user training, workflow redesign: the "stuff AI won't help with." This is where delivery programs actually succeed or fail once code is cheap.
+3. **Sustainment** — owning the thing in year two: upgrades, incident response, the pack/contract discipline that keeps a system maintainable after its authors move on.
+
+The paradigm's real product is **industrialized trust**: a pipeline that converts cheap AI-generated code into certified, sustainable production systems. That is organizational capital, not technical capital — which is exactly why competitors can't copy it by prompting harder.
+
+### 8.2 Cheap code moves the bottleneck to review
+
+When code is generated faster than humans read it, **review becomes the constraint** — and unreviewed volume is precisely the inbound risk of §5.1. Design for review throughput deliberately: contract-first development (reviewers check conformance to a spec, not intent from scratch), small tagged increments rather than bulk drops, generated tests that make behavior legible, logic-pack constraints that shrink the surface a reviewer must reason about. Track review queue time; when it grows, add review capacity or shrink batch size — never skip the read.
+
+### 8.3 Guard against our own two-day fallacy
+
+"Built in two days" is true and worth celebrating — and it is not "done." Done = contract-validated, pack-covered, integrated, re-verified inside, accredited. That gap is exactly what the vibe-coders' "days not months" pitch hides, and the two-clocks metric only stays credible as a counter-narrative if this team applies it honestly to itself. Internally, background-agent output gets the same human read as any inbound code: **AI made writing cheap; it did not make trusting cheap.**
+
+### 8.4 What this means for the team's identity (and Phase 3)
+
+If building is commoditized, the core team's long-term value is not "builders who use AI" but **certifiers, integrators, and ops transformers** — the people who run the trust pipeline and drive adoption. Conveniently, that is precisely the capability set Phases 1–2 build and Phase 3 requires the core team to absorb. It also upgrades the contractor transition story: transformation, integration, environment testing, and adoption work is the *growing* end of the value chain in a commoditized-code world, not the leftover end.
